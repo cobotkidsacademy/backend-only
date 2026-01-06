@@ -17,7 +17,9 @@ import { StudentCoursesModule } from './student-courses/student-courses.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
+      envFilePath: ['.env', '.env.local'], // Try multiple env file paths
+      ignoreEnvFile: false, // Still try to load .env if it exists
+      expandVariables: true, // Allow variable expansion in .env
     }),
     DatabaseModule,
     AuthModule,
