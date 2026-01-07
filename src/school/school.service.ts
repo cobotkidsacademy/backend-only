@@ -418,6 +418,131 @@ export class SchoolService {
 
     return username;
   }
+
+  // =============================================
+  // SCHOOL ANALYTICS METHODS
+  // =============================================
+
+  async getTutorsBySchool(schoolId: string) {
+    // Get all classes for this school
+    const { data: classes, error: classesError } = await this.supabase
+      .from('classes')
+      .select('id')
+      .eq('school_id', schoolId)
+      .eq('status', 'active');
+
+    if (classesError) {
+      throw new Error(classesError.message);
+    }
+
+    if (!classes || classes.length === 0) {
+      return [];
+    }
+
+    const classIds = classes.map((c: any) => c.id);
+
+    // Get all tutor assignments for these classes
+    const { data: assignments, error: assignmentsError } = await this.supabase
+      .from('tutor_class_assignments')
+      .select(`
+        id,
+        role,
+        assigned_at,
+        tutor:tutors(
+          id,
+          first_name,
+          middle_name,
+          last_name,
+          email,
+          phone,
+          level,
+          status
+        ),
+        class:classes(
+          id,
+          name,
+          level
+        )
+      `)
+      .in('class_id', classIds)
+      .eq('status', 'active');
+
+    if (assignmentsError) {
+      throw new Error(assignmentsError.message);
+    }
+
+    // Group by tutor and aggregate classes
+    const tutorMap = new Map();
+    (assignments || []).forEach((assignment: any) => {
+      const tutor = Array.isArray(assignment.tutor) ? assignment.tutor[0] : assignment.tutor;
+      const classData = Array.isArray(assignment.class) ? assignment.class[0] : assignment.class;
+      
+      if (!tutor) return;
+
+      const tutorId = tutor.id;
+      if (!tutorMap.has(tutorId)) {
+        tutorMap.set(tutorId, {
+          tutor: {
+            id: tutor.id,
+            first_name: tutor.first_name,
+            middle_name: tutor.middle_name,
+            last_name: tutor.last_name,
+            email: tutor.email,
+            phone: tutor.phone,
+            level: tutor.level,
+            status: tutor.status,
+          },
+          classes: [],
+          roles: new Set(),
+        });
+      }
+
+      const tutorData = tutorMap.get(tutorId);
+      tutorData.classes.push({
+        id: classData.id,
+        name: classData.name,
+        level: classData.level,
+        role: assignment.role,
+        assigned_at: assignment.assigned_at,
+      });
+      tutorData.roles.add(assignment.role);
+    });
+
+    // Convert to array and format
+    return Array.from(tutorMap.values()).map((item: any) => ({
+      ...item.tutor,
+      classes: item.classes,
+      roles: Array.from(item.roles),
+      total_classes: item.classes.length,
+    }));
+  }
+
+  async getStudentsBySchool(schoolId: string) {
+    const { data: students, error } = await this.supabase
+      .from('students')
+      .select(`
+        id,
+        first_name,
+        last_name,
+        username,
+        email,
+        status,
+        class:classes(
+          id,
+          name,
+          level
+        )
+      `)
+      .eq('school_id', schoolId)
+      .eq('status', 'active')
+      .order('first_name', { ascending: true });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return students || [];
+  }
 }
 
 

@@ -18,7 +18,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    // Check if it's a student, tutor, or admin token
+    // Check if it's a student, tutor, parent, school, or admin token
     if (payload.role === 'student') {
       // For students, return the payload directly (we'll validate in the endpoint)
       return {
@@ -28,6 +28,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       };
     } else if (payload.role === 'tutor') {
       // For tutors, return the payload directly (we'll validate in the endpoint)
+      return {
+        sub: payload.sub,
+        email: payload.email,
+        role: payload.role,
+      };
+    } else if (payload.role === 'parent') {
+      // For parents, return the payload directly
+      return {
+        sub: payload.sub,
+        email: payload.email,
+        role: payload.role,
+      };
+    } else if (payload.role === 'school') {
+      // For schools, return the payload directly
       return {
         sub: payload.sub,
         email: payload.email,

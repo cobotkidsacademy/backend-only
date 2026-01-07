@@ -21,6 +21,22 @@ This will show you exactly which variables are missing.
 
 ### Solutions
 
+#### Solution 0: Railway Deployment (Production)
+
+**If you're deploying to Railway**, see the comprehensive guide: [`RAILWAY_DEPLOYMENT.md`](../RAILWAY_DEPLOYMENT.md)
+
+**Quick fix for Railway:**
+1. Go to Railway Dashboard → Your Project → Backend Service → **Variables** tab
+2. Add these environment variables:
+   - `SUPABASE_URL` = Your Supabase project URL
+   - `SUPABASE_SERVICE_ROLE_KEY` = Your Supabase service_role key (NOT anon key)
+   - `JWT_SECRET` = A secure random string (min 32 characters)
+   - `JWT_EXPIRES_IN` = `24h`
+   - `PORT` = `3001` (or let Railway set it automatically)
+   - `NODE_ENV` = `production`
+   - `FRONTEND_URL` = Your frontend URL
+3. Redeploy the service
+
 #### Solution 1: Create .env File (Local Development)
 
 1. Copy the example file:

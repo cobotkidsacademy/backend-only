@@ -10,6 +10,8 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  Request,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { SchoolService } from './school.service';
 import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto } from './dto/school.dto';
@@ -149,5 +151,29 @@ export class SchoolController {
   async deleteStudent(@Param('id') id: string) {
     return this.schoolService.deleteStudent(id);
   }
-}
 
+  // =============================================
+  // SCHOOL ANALYTICS ENDPOINTS
+  // =============================================
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/tutors')
+  async getSchoolTutors(@Request() req) {
+    // Only allow schools to access their own data
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    return this.schoolService.getTutorsBySchool(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/students')
+  async getSchoolStudents(@Request() req) {
+    // Only allow schools to access their own data
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    return this.schoolService.getStudentsBySchool(req.user.sub);
+  }
+
+}

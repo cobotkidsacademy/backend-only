@@ -12,14 +12,19 @@ import { ClassCodeModule } from './class-code/class-code.module';
 import { QuizModule } from './quiz/quiz.module';
 import { EnrollmentModule } from './enrollment/enrollment.module';
 import { StudentCoursesModule } from './student-courses/student-courses.module';
+import { LoginRequestsModule } from './login-requests/login-requests.module';
+import { CurriculumModule } from './curriculum/curriculum.module';
+import { EditorModule } from './editor/editor.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env', '.env.local'], // Try multiple env file paths
-      ignoreEnvFile: false, // Still try to load .env if it exists
-      expandVariables: true, // Allow variable expansion in .env
+      // In production (Railway/Docker), use environment variables only
+      // In development, try to load from .env files
+      envFilePath: process.env.NODE_ENV === 'production' ? undefined : ['.env', '.env.local'],
+      ignoreEnvFile: process.env.NODE_ENV === 'production',
+      expandVariables: true,
     }),
     DatabaseModule,
     AuthModule,
@@ -31,6 +36,9 @@ import { StudentCoursesModule } from './student-courses/student-courses.module';
     QuizModule,
     EnrollmentModule,
     StudentCoursesModule,
+    LoginRequestsModule,
+    CurriculumModule,
+    EditorModule,
   ],
   controllers: [AppController],
   providers: [AppService],

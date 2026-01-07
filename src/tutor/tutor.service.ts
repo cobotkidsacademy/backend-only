@@ -101,16 +101,21 @@ export class TutorService {
   }
 
   async updateTutor(id: string, dto: UpdateTutorDto) {
-    // If names are being updated, regenerate email
+    // Get current tutor record so we can detect level/name changes
+    const currentTutor = await this.getTutorById(id);
+
+    // If names are being updated, regenerate tutor email
     let updateData: any = { ...dto };
 
     if (dto.first_name || dto.last_name) {
-      const currentTutor = await this.getTutorById(id);
       const firstName = dto.first_name || currentTutor.first_name;
       const lastName = dto.last_name || currentTutor.last_name;
-      
-      const newEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}@cobotkids.edutech`.replace(/[^a-z0-9.@]/g, '');
-      
+
+      const newEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}@cobotkids.edutech`.replace(
+        /[^a-z0-9.@]/g,
+        '',
+      );
+
       // Check if new email is different and available
       if (newEmail !== currentTutor.email) {
         const { data: existing } = await this.supabase
@@ -126,6 +131,115 @@ export class TutorService {
       }
     }
 
+    // Detect level/role transitions for manager/EDL roles
+    const managerLevels = ['manager', 'curriculum_manager', 'operations_manager', 'edl'];
+    const isCurrentlyManager = managerLevels.includes(currentTutor.level);
+    const newLevel = dto.level || currentTutor.level;
+    const isNewManager = managerLevels.includes(newLevel);
+
+    let managerAdminCredentials: { email: string; password: string; role: string } | null = null;
+
+    // If moving from manager-level back to intern/tutor etc, deactivate existing manager admin
+    if (dto.level && isCurrentlyManager && !isNewManager && currentTutor.manager_admin_email) {
+      await this.supabase
+        .from('admins')
+        .update({ role: 'disabled' })
+        .eq('email', currentTutor.manager_admin_email);
+
+      updateData.manager_admin_email = null;
+      updateData.manager_admin_plain_password = null;
+      updateData.manager_admin_role = null;
+    }
+
+    // If moving into a manager-level role (or changing between manager roles), (re)create credentials
+    if (dto.level && isNewManager) {
+      const firstName = (dto.first_name || currentTutor.first_name || '').toLowerCase();
+
+      // Map level to email prefix (field name)
+      let fieldName = dto.level;
+      if (dto.level === 'operations_manager') {
+        fieldName = 'operations';
+      } else if (dto.level === 'curriculum_manager') {
+        fieldName = 'curriculum';
+      }
+
+      // Email: fieldname.fname.cobotkid@edutech
+      const baseAdminEmail = `${fieldName}.${firstName}.cobotkid@edutech`.replace(
+        /[^a-z0-9.@]/g,
+        '',
+      );
+
+      // Ensure uniqueness if needed
+      let adminEmail = baseAdminEmail;
+      let counter = 1;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { data: existingAdmin } = await this.supabase
+          .from('admins')
+          .select('id')
+          .eq('email', adminEmail)
+          .maybeSingle();
+
+        if (!existingAdmin) break;
+        adminEmail = baseAdminEmail.replace('@', `${counter}@`);
+        counter++;
+      }
+
+      // Generate password: 5 letters/digits + 1 symbol
+      const lettersDigits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      const symbols = '!@#$%&*?';
+
+      const randomChar = (chars: string) =>
+        chars.charAt(Math.floor(Math.random() * chars.length));
+
+      let core = '';
+      for (let i = 0; i < 5; i++) {
+        core += randomChar(lettersDigits);
+      }
+      const symbol = randomChar(symbols);
+      const plainPassword = core + symbol;
+
+      const passwordHash = await bcrypt.hash(plainPassword, 10);
+
+      // Try to update existing admin for this tutor if it exists, otherwise create a new one
+      let adminError = null as any;
+      if (currentTutor.manager_admin_email) {
+        const { error } = await this.supabase
+          .from('admins')
+          .update({
+            email: adminEmail,
+            password_hash: passwordHash,
+            role: dto.level,
+          })
+          .eq('email', currentTutor.manager_admin_email);
+        adminError = error;
+      } else {
+        const { error } = await this.supabase.from('admins').insert({
+          email: adminEmail,
+          password_hash: passwordHash,
+          role: dto.level,
+        });
+        adminError = error;
+      }
+
+      if (adminError) {
+        this.logger.error(
+          `Failed to create/update manager/EDL admin for tutor ${id}: ${adminError.message}`,
+        );
+      } else {
+        managerAdminCredentials = {
+          email: adminEmail,
+          password: plainPassword,
+          role: dto.level,
+        };
+
+        // Also store these details on the tutor record for later viewing in the admin UI
+        updateData.manager_admin_email = adminEmail;
+        updateData.manager_admin_plain_password = plainPassword;
+        updateData.manager_admin_role = dto.level;
+      }
+    }
+
     const { data, error } = await this.supabase
       .from('tutors')
       .update(updateData)
@@ -137,7 +251,11 @@ export class TutorService {
       throw new Error(error.message);
     }
 
-    return data;
+    // Return tutor plus any generated manager/EDL admin credentials
+    return {
+      ...data,
+      manager_admin_credentials: managerAdminCredentials || undefined,
+    };
   }
 
   async deleteTutor(id: string) {
@@ -166,7 +284,24 @@ export class TutorService {
 
     return data;
   }
+
+  async getAvailableLevels() {
+    // Return available tutor levels based on database constraint
+    // These match the CHECK constraint in the database
+    return {
+      levels: [
+        { value: 'intern', label: 'Intern' },
+        { value: 'tutor', label: 'Tutor' },
+        { value: 'manager', label: 'Manager' },
+        { value: 'edl', label: 'EDL' },
+        { value: 'operations_manager', label: 'Operations Manager' },
+        { value: 'curriculum_manager', label: 'Curriculum Manager' },
+      ],
+    };
+  }
 }
+
+
 
 
 

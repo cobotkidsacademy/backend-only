@@ -56,7 +56,24 @@ export class TutorController {
   async deleteTutor(@Param('id') id: string) {
     return this.tutorService.deleteTutor(id);
   }
+
+  @Get('levels/available')
+  @UseGuards(JwtAuthGuard)
+  async getAvailableLevels() {
+    return this.tutorService.getAvailableLevels();
+  }
+
+  @Put(':id/upgrade')
+  @UseGuards(JwtAuthGuard)
+  async upgradeTutor(
+    @Param('id') id: string,
+    @Body() dto: { level: string },
+  ) {
+    return this.tutorService.updateTutor(id, { level: dto.level });
+  }
 }
+
+
 
 
 
