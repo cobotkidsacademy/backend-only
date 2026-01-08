@@ -46,3 +46,4 @@ CREATE TRIGGER update_attendance_records_updated_at
     BEFORE UPDATE ON attendance_records
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+

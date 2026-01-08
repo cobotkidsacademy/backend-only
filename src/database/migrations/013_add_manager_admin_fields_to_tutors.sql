@@ -12,3 +12,4 @@ ADD COLUMN IF NOT EXISTS manager_admin_role VARCHAR(50);
 
 
 
+

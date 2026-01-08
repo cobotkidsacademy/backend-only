@@ -56,3 +56,4 @@ CREATE TRIGGER trigger_update_course_editor_assignments_updated_at
 
 
 
+
