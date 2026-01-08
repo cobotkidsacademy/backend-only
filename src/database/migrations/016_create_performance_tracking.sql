@@ -80,3 +80,6 @@ CREATE POLICY "Service role can access all performance_history" ON performance_h
 CREATE TRIGGER update_student_performance_updated_at BEFORE UPDATE ON student_performance FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 
+
+
+

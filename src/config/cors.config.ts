@@ -8,38 +8,75 @@ export function getCorsConfig(): CorsOptions {
   const nodeEnv = process.env.NODE_ENV || 'development';
   const isDevelopment = nodeEnv === 'development';
 
-  // Default development origins
-  const defaultDevOrigins = [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:5173',
-  ];
-
   // Get allowed origins from environment variable
-  // Format: "http://localhost:3000,https://example.com,https://app.example.com"
+  // FOR PRODUCTION: Set these in your .env.production or hosting platform
+  // Format: "https://cobot-system.vercel.app,https://app.cobotkids.com,https://admin.cobotkids.com"
   const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
-  let allowedOrigins: string[] = [];
+  let allowedOrigins: (string | RegExp)[] = [];
 
   if (allowedOriginsEnv) {
     // Parse comma-separated origins from environment variable
-    allowedOrigins = allowedOriginsEnv.split(',').map((origin) => origin.trim());
+    allowedOrigins = allowedOriginsEnv.split(',').map((origin) => {
+      const trimmed = origin.trim();
+      
+      // Handle wildcard patterns by converting to regex
+      if (trimmed.includes('*')) {
+        // Convert wildcard pattern to regex
+        // Example: "*.vercel.app" -> /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/
+        const regexPattern = trimmed
+          .replace(/\./g, '\\.') // Escape dots
+          .replace(/\*/g, '[a-zA-Z0-9-]+'); // Replace * with character match
+        
+        // In production, only allow HTTPS
+        return new RegExp(`^https://${regexPattern}$`);
+      }
+      
+      return trimmed;
+    });
   } else if (isDevelopment) {
-    // In development, use default localhost origins
-    allowedOrigins = defaultDevOrigins;
+    // DEVELOPMENT: Flexible origins
+    allowedOrigins = [
+      /^http:\/\/localhost(:\d+)?$/, // All localhost with any port
+      /^http:\/\/127\.0\.0\.1(:\d+)?$/, // All 127.0.0.1 with any port
+      /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/, // All local network IPs
+      /^https?:\/\/.*\.vercel\.app$/, // All Vercel deployments (http or https)
+      /^https?:\/\/.*\.netlify\.app$/,
+      /^https?:\/\/.*\.github\.io$/,
+      /^https?:\/\/.*\.onrender\.com$/,
+      /^https?:\/\/.*\.railway\.app$/,
+    ];
   } else {
-    // In production without ALLOWED_ORIGINS, allow all (not recommended but safe fallback)
-    // You should always set ALLOWED_ORIGINS in production
+    // PRODUCTION DEFAULT: Strict list - UPDATE THESE!
     console.warn(
-      '⚠️  WARNING: ALLOWED_ORIGINS not set in production. Allowing all origins.',
+      '⚠️  PRODUCTION WARNING: ALLOWED_ORIGINS not set. Using strict defaults.',
     );
-    allowedOrigins = ['*'];
+    
+    // REPLACE THESE WITH YOUR ACTUAL PRODUCTION DOMAINS:
+    allowedOrigins = [
+      // Your Vercel frontend
+      'https://cobot-system.vercel.app',
+      'https://cobot-system-*.vercel.app',
+      
+      // Your main domain (if you have one)
+      // 'https://cobotkids.com',
+      // 'https://app.cobotkids.com',
+      // 'https://admin.cobotkids.com',
+      
+      // Your backend API domain (if different)
+      // 'https://api.cobotkids.com',
+    ];
   }
 
-  // In development, always include localhost origins even if ALLOWED_ORIGINS is set
-  if (isDevelopment) {
-    const combinedOrigins = [...new Set([...defaultDevOrigins, ...allowedOrigins])];
-    allowedOrigins = combinedOrigins;
+  // Always add FRONTEND_URL from environment if set
+  if (process.env.FRONTEND_URL) {
+    const frontendUrls = process.env.FRONTEND_URL
+      .split(',')
+      .map(url => url.trim())
+      .filter(url => url);
+    
+    if (frontendUrls.length > 0) {
+      allowedOrigins = [...allowedOrigins, ...frontendUrls];
+    }
   }
 
   // Origin validation function
@@ -47,30 +84,49 @@ export function getCorsConfig(): CorsOptions {
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void,
   ) => {
-    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    // Allow requests with no origin (like mobile apps, Postman, curl, etc.)
     if (!origin) {
       return callback(null, true);
     }
 
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes('*')) {
+    // Log in production for security monitoring
+    if (!isDevelopment) {
+      console.log(`🔒 CORS check for origin: ${origin}`);
+    }
+
+    // Check if origin matches any allowed pattern
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') {
+        // Exact match for strings
+        return origin === allowed;
+      } else if (allowed instanceof RegExp) {
+        // Pattern match for regex
+        return allowed.test(origin);
+      }
+      return false;
+    });
+
+    if (isAllowed) {
+      if (isDevelopment) {
+        console.log(`✅ Allowed origin: ${origin}`);
+      }
       return callback(null, true);
     }
 
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
+    // Log blocked origin
+    console.warn(`🚫 CORS blocked: ${origin} (${isDevelopment ? 'Development' : 'Production'})`);
+    
+    if (isDevelopment) {
+      console.log(`   Allowed patterns:`, allowedOrigins);
     }
-
-    // Log blocked origin for debugging
-    console.warn(`🚫 CORS blocked origin: ${origin}`);
-    console.log(`   Allowed origins: ${allowedOrigins.join(', ')}`);
+    
     callback(new Error('Not allowed by CORS'));
   };
 
   const corsOptions: CorsOptions = {
     origin: originFunction,
     credentials: true, // Allow cookies and authentication headers
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
@@ -79,26 +135,29 @@ export function getCorsConfig(): CorsOptions {
       'Origin',
       'Access-Control-Request-Method',
       'Access-Control-Request-Headers',
+      'X-API-Key',
+      'X-CSRF-Token',
+      'X-Request-ID',
     ],
     exposedHeaders: [
       'Authorization',
       'Content-Type',
       'Content-Length',
       'X-Total-Count',
+      'X-Request-ID',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
     ],
-    preflightContinue: false, // Let NestJS handle preflight
-    optionsSuccessStatus: 200, // Some legacy browsers (IE11) choke on 204
+    maxAge: 86400, // 24 hours cache for preflight
+    preflightContinue: false,
+    optionsSuccessStatus: 200,
   };
 
-  // Log CORS configuration in development
-  if (isDevelopment) {
-    console.log('🌐 CORS Configuration:');
-    console.log(`   Environment: ${nodeEnv}`);
-    console.log(`   Allowed Origins: ${allowedOrigins.join(', ')}`);
-    console.log(`   Credentials: ${corsOptions.credentials}`);
-  }
+  // Log configuration
+  console.log(`🌐 CORS: ${nodeEnv.toUpperCase()} mode`);
+  console.log(`   Allowed Origins: ${allowedOrigins.length} pattern(s)`);
 
   return corsOptions;
 }
-
 

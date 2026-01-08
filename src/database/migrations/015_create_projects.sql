@@ -80,3 +80,6 @@ CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW
 CREATE TRIGGER update_student_project_submissions_updated_at BEFORE UPDATE ON student_project_submissions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 
+
+
+

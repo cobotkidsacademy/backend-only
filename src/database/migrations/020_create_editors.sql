@@ -69,3 +69,6 @@ INSERT INTO editors (name, description, icon, color, status) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 
+
+
+

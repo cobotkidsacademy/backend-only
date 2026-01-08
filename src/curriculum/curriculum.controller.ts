@@ -6,11 +6,17 @@ import {
   Delete,
   Body,
   Param,
+  Query,
+  Request,
   UseGuards,
   HttpCode,
   HttpStatus,
   Logger,
+  Res,
+  BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { CurriculumService } from './curriculum.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
@@ -40,6 +46,33 @@ export class CurriculumController {
     return this.curriculumService.getExamsByTopicId(topicId);
   }
 
+  // Specific routes must come before parameterized routes
+  @Get('exams/performance')
+  @UseGuards(JwtAuthGuard)
+  async getExamPerformance(
+    @Query('school_id') schoolId?: string,
+    @Query('class_id') classId?: string,
+    @Query('course_id') courseId?: string,
+    @Query('course_level_id') courseLevelId?: string,
+    @Query('topic_id') topicId?: string,
+    @Query('exam_id') examId?: string,
+    @Query('date_from') dateFrom?: string,
+    @Query('date_to') dateTo?: string,
+    @Query('status') status?: string
+  ) {
+    const filters: any = {};
+    if (schoolId) filters.school_id = schoolId;
+    if (classId) filters.class_id = classId;
+    if (courseId) filters.course_id = courseId;
+    if (courseLevelId) filters.course_level_id = courseLevelId;
+    if (topicId) filters.topic_id = topicId;
+    if (examId) filters.exam_id = examId;
+    if (dateFrom) filters.date_from = dateFrom;
+    if (dateTo) filters.date_to = dateTo;
+    if (status) filters.status = status as any;
+    return this.curriculumService.getExamPerformance(filters);
+  }
+
   @Get('exams/:id')
   @UseGuards(JwtAuthGuard)
   async getExamById(@Param('id') id: string) {
@@ -57,6 +90,80 @@ export class CurriculumController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteExam(@Param('id') id: string) {
     return this.curriculumService.deleteExam(id);
+  }
+
+  @Get('exams/:id/download')
+  @UseGuards(JwtAuthGuard)
+  async downloadExam(@Param('id') id: string, @Res() res: Response) {
+    try {
+      const buffer = await this.curriculumService.generateExamWordDocument(id);
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      res.setHeader('Content-Disposition', `attachment; filename="exam-${id}.docx"`);
+      res.send(buffer);
+    } catch (error: any) {
+      this.logger.error('Error generating exam document:', error);
+      res.status(500).json({ message: error.message || 'Failed to generate exam document' });
+    }
+  }
+
+  @Get('exams/:id/attempts')
+  @UseGuards(JwtAuthGuard)
+  async getExamAttempts(
+    @Param('id') id: string,
+    @Query('school_id') schoolId?: string,
+    @Query('class_id') classId?: string
+  ) {
+    const filters: { school_id?: string; class_id?: string } = {};
+    if (schoolId) filters.school_id = schoolId;
+    if (classId) filters.class_id = classId;
+    return this.curriculumService.getExamAttempts(id, filters);
+  }
+
+  @Get('exam-attempts/:attemptId/details')
+  @UseGuards(JwtAuthGuard)
+  async getExamAttemptDetails(@Param('attemptId') attemptId: string) {
+    return this.curriculumService.getStudentExamAttemptDetails(attemptId);
+  }
+
+  @Get('students/:studentId/exam-attempts')
+  @UseGuards(JwtAuthGuard)
+  async getStudentExamAttempts(@Param('studentId') studentId: string) {
+    return this.curriculumService.getStudentExamAttempts(studentId);
+  }
+
+  @Post('exams/register')
+  @UseGuards(JwtAuthGuard)
+  async registerForExam(@Request() req, @Body() body: { exam_code: string }) {
+    if (req.user.role !== 'student') {
+      throw new BadRequestException('Only students can register for exams');
+    }
+    if (!body.exam_code || !body.exam_code.trim()) {
+      throw new BadRequestException('Exam code is required');
+    }
+    return this.curriculumService.registerStudentForExam(req.user.sub, body.exam_code);
+  }
+
+  @Get('exams/student/:examId')
+  @UseGuards(JwtAuthGuard)
+  async getExamForStudent(
+    @Request() req,
+    @Param('examId') examId: string,
+    @Query('attempt_id') attemptId?: string
+  ) {
+    if (req.user.role !== 'student') {
+      throw new BadRequestException('Only students can access this endpoint');
+    }
+    return this.curriculumService.getExamForStudent(examId, attemptId);
+  }
+
+  @Post('exams/attempts/submit')
+  @UseGuards(JwtAuthGuard)
+  async submitExam(@Request() req, @Body() dto: any) {
+    if (req.user.role !== 'student') {
+      throw new BadRequestException('Only students can submit exams');
+    }
+    return this.curriculumService.submitExam(dto, req.user.sub);
   }
 
   // ============ EXAM QUESTION ENDPOINTS ============

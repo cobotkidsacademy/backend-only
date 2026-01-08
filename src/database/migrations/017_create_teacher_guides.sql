@@ -81,3 +81,6 @@ CREATE TRIGGER update_teacher_guides_updated_at BEFORE UPDATE ON teacher_guides 
 CREATE TRIGGER update_teacher_guide_sections_updated_at BEFORE UPDATE ON teacher_guide_sections FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 
+
+
+

@@ -80,3 +80,6 @@ CREATE TRIGGER set_class_course_level_completed_at_trigger
 
 
 
+
+
+
