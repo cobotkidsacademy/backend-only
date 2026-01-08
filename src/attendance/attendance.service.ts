@@ -1053,5 +1053,75 @@ export class AttendanceService {
 
     return dates;
   }
+
+  /**
+   * Check if a tutor is assigned to a class
+   */
+  async isTutorAssignedToClass(tutorId: string, classId: string): Promise<boolean> {
+    const { data, error } = await this.supabase
+      .from('tutor_class_assignments')
+      .select('id')
+      .eq('tutor_id', tutorId)
+      .eq('class_id', classId)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (error) {
+      this.logger.error(`Error checking tutor assignment: ${error.message}`);
+      return false;
+    }
+
+    return !!data;
+  }
+
+  /**
+   * Get all classes assigned to a tutor (for attendance purposes)
+   */
+  async getTutorAssignedClasses(tutorId: string): Promise<any[]> {
+    const { data: assignments, error } = await this.supabase
+      .from('tutor_class_assignments')
+      .select(`
+        id,
+        role,
+        class_id,
+        class:classes(
+          id,
+          name,
+          level,
+          status,
+          school:schools(id, name, code)
+        )
+      `)
+      .eq('tutor_id', tutorId)
+      .eq('status', 'active');
+
+    if (error) {
+      this.logger.error(`Error fetching tutor classes: ${error.message}`);
+      throw new NotFoundException('Failed to fetch tutor classes');
+    }
+
+    if (!assignments || assignments.length === 0) {
+      return [];
+    }
+
+    // Transform the data to ensure proper structure
+    return assignments.map((assignment: any) => {
+      const classData = Array.isArray(assignment.class) ? assignment.class[0] : assignment.class;
+      const schoolData = classData?.school ? (Array.isArray(classData.school) ? classData.school[0] : classData.school) : null;
+
+      return {
+        id: classData?.id,
+        name: classData?.name,
+        level: classData?.level,
+        status: classData?.status,
+        role: assignment.role,
+        school: schoolData ? {
+          id: schoolData.id,
+          name: schoolData.name,
+          code: schoolData.code,
+        } : null,
+      };
+    });
+  }
 }
 
