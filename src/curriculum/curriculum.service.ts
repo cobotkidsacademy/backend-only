@@ -1,3 +1,4 @@
+
 import { Injectable, Inject, NotFoundException, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -2018,4 +2019,3 @@ export class CurriculumService {
     };
   }
 }
-

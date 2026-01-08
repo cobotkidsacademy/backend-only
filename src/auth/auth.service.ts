@@ -1,8 +1,8 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Inject } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
+import { AttendanceService } from '../attendance/attendance.service';
 
 @Injectable()
 export class AuthService {
@@ -11,6 +11,8 @@ export class AuthService {
   constructor(
     @Inject('SUPABASE_CLIENT') private supabase: SupabaseClient,
     private jwtService: JwtService,
+    @Inject(forwardRef(() => AttendanceService))
+    private attendanceService: AttendanceService,
   ) {}
 
   // ============ ADMIN LOGIN ============
@@ -156,13 +158,23 @@ export class AuthService {
 
       // Update login tracking (last_login and login_count)
       const currentLoginCount = (student as any).login_count || 0;
+      const loginTimestamp = new Date().toISOString();
       await this.supabase
         .from('students')
         .update({
-          last_login: new Date().toISOString(),
+          last_login: loginTimestamp,
           login_count: currentLoginCount + 1,
         })
         .eq('id', student.id);
+
+      // Auto-mark attendance on login
+      // This is done asynchronously to not block login
+      this.attendanceService.autoMarkAttendance({
+        student_id: student.id,
+        login_timestamp: loginTimestamp,
+      }).catch((err) => {
+        this.logger.warn(`Failed to auto-mark attendance for student ${student.id}: ${err.message}`, err.stack);
+      });
 
       // Generate JWT token
       const payload = {

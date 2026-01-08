@@ -1,3 +1,4 @@
+
 import {
   Controller,
   Get,
@@ -343,4 +344,3 @@ export class CurriculumController {
     return this.curriculumService.deleteCourseEditor(courseId);
   }
 }
-
