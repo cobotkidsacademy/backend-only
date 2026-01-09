@@ -169,11 +169,6 @@ export class AuthService {
         student = studentData;
       }
 
-      if (error) {
-        this.logger.error(`Database error: ${JSON.stringify(error)}`);
-        throw new UnauthorizedException('Invalid credentials');
-      }
-
       if (!student) {
         this.logger.warn(`Student not found for username: ${username}`);
         throw new UnauthorizedException('Invalid username or password');

@@ -165,17 +165,20 @@ export class StudentLessonsService {
    */
   async markLessonAccessed(studentId: string, lessonId: string): Promise<void> {
     // This is done asynchronously to not block the lesson load
-    this.supabase
-      .from('student_lesson_progress')
-      .upsert({
-        student_id: studentId,
-        lesson_id: lessonId,
-        last_accessed_at: new Date().toISOString(),
-        completed: false,
-      })
-      .catch((err) => {
-        this.logger.warn(`Failed to mark lesson accessed: ${err.message}`);
-      });
+    (async () => {
+      try {
+        await this.supabase
+          .from('student_lesson_progress')
+          .upsert({
+            student_id: studentId,
+            lesson_id: lessonId,
+            last_accessed_at: new Date().toISOString(),
+            completed: false,
+          });
+      } catch (err: any) {
+        this.logger.warn(`Failed to mark lesson accessed: ${err?.message || err}`);
+      }
+    })();
 
     // Invalidate cache
     await this.cacheService.delete(`student:${studentId}:lesson:${lessonId}:full`, 'lessons');
