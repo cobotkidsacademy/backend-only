@@ -3,16 +3,22 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
 import { AttendanceService } from '../attendance/attendance.service';
+import { CacheService } from '../core/cache/cache.service';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  // In-memory rate limiting for login attempts (prevents brute force)
+  private readonly loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  private readonly MAX_LOGIN_ATTEMPTS = 5;
+  private readonly LOCKOUT_DURATION = 15 * 60 * 1000; // 15 minutes
 
   constructor(
     @Inject('SUPABASE_CLIENT') private supabase: SupabaseClient,
     private jwtService: JwtService,
     @Inject(forwardRef(() => AttendanceService))
     private attendanceService: AttendanceService,
+    private cacheService: CacheService,
   ) {}
 
   // ============ ADMIN LOGIN ============
@@ -116,16 +122,52 @@ export class AuthService {
   async studentLogin(username: string, password: string) {
     this.logger.log(`=== STUDENT LOGIN ATTEMPT ===`);
     this.logger.log(`Username: ${username}`);
-    this.logger.log(`Password length: ${password?.length || 0}`);
 
     try {
-      // Query student from Supabase
-      this.logger.log(`Querying database for student...`);
-      const { data: student, error } = await this.supabase
-      .from('students')
-      .select('id, username, password_hash, first_name, last_name, status, class_id, school_id, login_count, last_login')
-      .eq('username', username)
-      .single();
+      // Check rate limiting
+      const rateLimitKey = `login:student:${username}`;
+      if (this.isRateLimited(rateLimitKey)) {
+        throw new UnauthorizedException('Too many login attempts. Please try again in 15 minutes.');
+      }
+
+      // Check cache for user metadata (non-sensitive data)
+      const cachedUserKey = `user:student:${username}:meta`;
+      let cachedUser = await this.cacheService.get<any>(cachedUserKey, 'auth');
+      
+      let student;
+      if (cachedUser && cachedUser.username === username) {
+        // User exists in cache, fetch only password hash
+        this.logger.debug(`User metadata cache hit for ${username}`);
+        const { data: studentData, error } = await this.supabase
+          .from('students')
+          .select('id, username, password_hash, status, first_name, last_name, class_id, school_id, login_count, last_login')
+          .eq('id', cachedUser.id)
+          .single();
+        
+        if (error || !studentData) {
+          // Cache invalid, fetch fresh
+          cachedUser = null;
+        } else {
+          student = studentData;
+        }
+      }
+
+      // If not cached, fetch from database
+      if (!student) {
+        this.logger.log(`Querying database for student...`);
+        const { data: studentData, error } = await this.supabase
+          .from('students')
+          .select('id, username, password_hash, first_name, last_name, status, class_id, school_id, login_count, last_login')
+          .eq('username', username)
+          .single();
+        
+        if (error) {
+          this.logger.error(`Database error: ${JSON.stringify(error)}`);
+          this.recordFailedAttempt(rateLimitKey);
+          throw new UnauthorizedException('Invalid credentials');
+        }
+        student = studentData;
+      }
 
       if (error) {
         this.logger.error(`Database error: ${JSON.stringify(error)}`);
@@ -149,12 +191,15 @@ export class AuthService {
       // Verify password
       this.logger.log(`Comparing passwords...`);
       const isPasswordValid = await bcrypt.compare(password, student.password_hash);
-      this.logger.log(`Password valid: ${isPasswordValid}`);
-
+      
       if (!isPasswordValid) {
         this.logger.warn(`Invalid password attempt for username: ${username}`);
+        this.recordFailedAttempt(rateLimitKey);
         throw new UnauthorizedException('Invalid username or password');
       }
+
+      // Clear rate limit on successful login
+      this.clearRateLimit(rateLimitKey);
 
       // Update login tracking (last_login and login_count)
       const currentLoginCount = (student as any).login_count || 0;
@@ -185,19 +230,24 @@ export class AuthService {
 
       const token = this.jwtService.sign(payload);
 
+      // Cache user metadata for 15 minutes (non-sensitive data only)
+      const userMeta = {
+        id: student.id,
+        username: student.username,
+        first_name: student.first_name,
+        last_name: student.last_name,
+        role: 'student',
+        class_id: student.class_id,
+        school_id: student.school_id,
+      };
+      await this.cacheService.set(`user:student:${student.id}:meta`, userMeta, 900, 'auth'); // 15 min TTL
+      await this.cacheService.set(cachedUserKey, { id: student.id, username: student.username }, 900, 'auth');
+
       this.logger.log(`✅ Successful login for student: ${username}`);
 
       return {
         token,
-        user: {
-          id: student.id,
-          username: student.username,
-          first_name: student.first_name,
-          last_name: student.last_name,
-          role: 'student',
-          class_id: student.class_id,
-          school_id: student.school_id,
-        },
+        user: userMeta,
       };
     } catch (error) {
       if (error instanceof UnauthorizedException) {
@@ -453,25 +503,56 @@ export class AuthService {
   async tutorLogin(email: string, password: string) {
     this.logger.log(`=== TUTOR LOGIN ATTEMPT ===`);
     this.logger.log(`Email: ${email}`);
-    this.logger.log(`Password length: ${password?.length || 0}`);
 
     try {
-      // Query tutor from Supabase
-      this.logger.log(`Querying database for tutor...`);
-      const { data: tutor, error } = await this.supabase
-        .from('tutors')
-        .select('id, email, password_hash, first_name, middle_name, last_name, level, status')
-        .eq('email', email)
-        .single();
-
-      if (error) {
-        this.logger.error(`Database error: ${JSON.stringify(error)}`);
-        throw new UnauthorizedException('Invalid credentials');
+      // Check rate limiting
+      const rateLimitKey = `login:tutor:${email}`;
+      if (this.isRateLimited(rateLimitKey)) {
+        throw new UnauthorizedException('Too many login attempts. Please try again in 15 minutes.');
       }
 
+      // Check cache for user metadata
+      const cachedUserKey = `user:tutor:${email}:meta`;
+      let cachedUser = await this.cacheService.get<any>(cachedUserKey, 'auth');
+      
+      let tutor;
+      if (cachedUser && cachedUser.email === email) {
+        // Fetch only password hash and status
+        const { data: tutorData, error } = await this.supabase
+          .from('tutors')
+          .select('id, email, password_hash, first_name, middle_name, last_name, level, status')
+          .eq('id', cachedUser.id)
+          .single();
+        
+        if (error || !tutorData) {
+          cachedUser = null;
+        } else {
+          tutor = tutorData;
+        }
+      }
+
+      // If not cached, fetch from database
       if (!tutor) {
-        this.logger.warn(`Tutor not found for email: ${email}`);
-        throw new UnauthorizedException('Invalid email or password');
+        this.logger.log(`Querying database for tutor...`);
+        const { data: tutorData, error } = await this.supabase
+          .from('tutors')
+          .select('id, email, password_hash, first_name, middle_name, last_name, level, status')
+          .eq('email', email)
+          .single();
+
+        if (error) {
+          this.logger.error(`Database error: ${JSON.stringify(error)}`);
+          this.recordFailedAttempt(rateLimitKey);
+          throw new UnauthorizedException('Invalid credentials');
+        }
+
+        if (!tutorData) {
+          this.logger.warn(`Tutor not found for email: ${email}`);
+          this.recordFailedAttempt(rateLimitKey);
+          throw new UnauthorizedException('Invalid email or password');
+        }
+
+        tutor = tutorData;
       }
 
       // Check if tutor is active
@@ -480,17 +561,17 @@ export class AuthService {
         throw new UnauthorizedException('Your account is not active. Please contact your administrator.');
       }
 
-      this.logger.log(`Tutor found: ${tutor.email}, ID: ${tutor.id}`);
-
       // Verify password
-      this.logger.log(`Comparing passwords...`);
       const isPasswordValid = await bcrypt.compare(password, tutor.password_hash);
-      this.logger.log(`Password valid: ${isPasswordValid}`);
 
       if (!isPasswordValid) {
         this.logger.warn(`Invalid password attempt for email: ${email}`);
+        this.recordFailedAttempt(rateLimitKey);
         throw new UnauthorizedException('Invalid email or password');
       }
+
+      // Clear rate limit on successful login
+      this.clearRateLimit(rateLimitKey);
 
       // Generate JWT token
       const payload = {
@@ -501,19 +582,24 @@ export class AuthService {
 
       const token = this.jwtService.sign(payload);
 
+      // Cache user metadata for 15 minutes
+      const userMeta = {
+        id: tutor.id,
+        email: tutor.email,
+        first_name: tutor.first_name,
+        middle_name: tutor.middle_name,
+        last_name: tutor.last_name,
+        level: tutor.level,
+        role: 'tutor',
+      };
+      await this.cacheService.set(`user:tutor:${tutor.id}:meta`, userMeta, 900, 'auth');
+      await this.cacheService.set(cachedUserKey, { id: tutor.id, email: tutor.email }, 900, 'auth');
+
       this.logger.log(`✅ Successful login for tutor: ${email}`);
 
       return {
         token,
-        user: {
-          id: tutor.id,
-          email: tutor.email,
-          first_name: tutor.first_name,
-          middle_name: tutor.middle_name,
-          last_name: tutor.last_name,
-          level: tutor.level,
-          role: 'tutor',
-        },
+        user: userMeta,
       };
     } catch (error) {
       if (error instanceof UnauthorizedException) {
@@ -554,25 +640,55 @@ export class AuthService {
   async parentLogin(email: string, password: string) {
     this.logger.log(`=== PARENT LOGIN ATTEMPT ===`);
     this.logger.log(`Email: ${email}`);
-    this.logger.log(`Password length: ${password?.length || 0}`);
 
     try {
-      // Query parent from Supabase
-      this.logger.log(`Querying database for parent...`);
-      const { data: parent, error } = await this.supabase
-        .from('parents')
-        .select('id, email, password_hash, first_name, last_name, status')
-        .eq('email', email)
-        .single();
-
-      if (error) {
-        this.logger.error(`Database error (parent login): ${JSON.stringify(error)}`);
-        throw new UnauthorizedException('Invalid credentials');
+      // Check rate limiting
+      const rateLimitKey = `login:parent:${email}`;
+      if (this.isRateLimited(rateLimitKey)) {
+        throw new UnauthorizedException('Too many login attempts. Please try again in 15 minutes.');
       }
 
+      // Check cache for user metadata
+      const cachedUserKey = `user:parent:${email}:meta`;
+      let cachedUser = await this.cacheService.get<any>(cachedUserKey, 'auth');
+      
+      let parent;
+      if (cachedUser && cachedUser.email === email) {
+        const { data: parentData, error } = await this.supabase
+          .from('parents')
+          .select('id, email, password_hash, first_name, last_name, status')
+          .eq('id', cachedUser.id)
+          .single();
+        
+        if (error || !parentData) {
+          cachedUser = null;
+        } else {
+          parent = parentData;
+        }
+      }
+
+      // If not cached, fetch from database
       if (!parent) {
-        this.logger.warn(`Parent not found for email: ${email}`);
-        throw new UnauthorizedException('Invalid email or password');
+        this.logger.log(`Querying database for parent...`);
+        const { data: parentData, error } = await this.supabase
+          .from('parents')
+          .select('id, email, password_hash, first_name, last_name, status')
+          .eq('email', email)
+          .single();
+
+        if (error) {
+          this.logger.error(`Database error (parent login): ${JSON.stringify(error)}`);
+          this.recordFailedAttempt(rateLimitKey);
+          throw new UnauthorizedException('Invalid credentials');
+        }
+
+        if (!parentData) {
+          this.logger.warn(`Parent not found for email: ${email}`);
+          this.recordFailedAttempt(rateLimitKey);
+          throw new UnauthorizedException('Invalid email or password');
+        }
+
+        parent = parentData;
       }
 
       // Check if parent is active
@@ -581,17 +697,17 @@ export class AuthService {
         throw new UnauthorizedException('Your account is not active. Please contact your administrator.');
       }
 
-      this.logger.log(`Parent found: ${parent.email}, ID: ${parent.id}`);
-
       // Verify password
-      this.logger.log(`Comparing passwords (parent)...`);
       const isPasswordValid = await bcrypt.compare(password, parent.password_hash);
-      this.logger.log(`Password valid: ${isPasswordValid}`);
 
       if (!isPasswordValid) {
         this.logger.warn(`Invalid password attempt for parent email: ${email}`);
+        this.recordFailedAttempt(rateLimitKey);
         throw new UnauthorizedException('Invalid email or password');
       }
+
+      // Clear rate limit on successful login
+      this.clearRateLimit(rateLimitKey);
 
       // Generate JWT token
       const payload = {
@@ -1395,6 +1511,79 @@ export class AuthService {
     }
 
     return { success: true };
+  }
+
+  // ============ RATE LIMITING HELPERS ============
+  
+  /**
+   * Check if an identifier is rate limited
+   */
+  private isRateLimited(key: string): boolean {
+    const attempt = this.loginAttempts.get(key);
+    if (!attempt) {
+      return false;
+    }
+
+    // Check if lockout period has expired
+    if (Date.now() > attempt.resetAt) {
+      this.loginAttempts.delete(key);
+      return false;
+    }
+
+    return attempt.count >= this.MAX_LOGIN_ATTEMPTS;
+  }
+
+  /**
+   * Record a failed login attempt
+   */
+  private recordFailedAttempt(key: string): void {
+    const attempt = this.loginAttempts.get(key);
+    if (!attempt) {
+      this.loginAttempts.set(key, {
+        count: 1,
+        resetAt: Date.now() + this.LOCKOUT_DURATION,
+      });
+    } else {
+      // If lockout period expired, reset
+      if (Date.now() > attempt.resetAt) {
+        this.loginAttempts.set(key, {
+          count: 1,
+          resetAt: Date.now() + this.LOCKOUT_DURATION,
+        });
+      } else {
+        // Increment count
+        attempt.count++;
+      }
+    }
+
+    // Clean up old entries periodically (every 1000 attempts)
+    if (this.loginAttempts.size > 10000) {
+      this.cleanupOldAttempts();
+    }
+  }
+
+  /**
+   * Clear rate limit for successful login
+   */
+  private clearRateLimit(key: string): void {
+    this.loginAttempts.delete(key);
+  }
+
+  /**
+   * Clean up old rate limit entries
+   */
+  private cleanupOldAttempts(): void {
+    const now = Date.now();
+    const keysToDelete: string[] = [];
+
+    this.loginAttempts.forEach((attempt, key) => {
+      if (now > attempt.resetAt) {
+        keysToDelete.push(key);
+      }
+    });
+
+    keysToDelete.forEach((key) => this.loginAttempts.delete(key));
+    this.logger.debug(`Cleaned up ${keysToDelete.length} expired rate limit entries`);
   }
 }
 

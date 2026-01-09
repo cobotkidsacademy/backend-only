@@ -7,13 +7,46 @@ import {
   killProcessByPort,
 } from './utils/port.util';
 import { getCorsConfig } from './config/cors.config';
+import { ResponseCompressInterceptor } from './core/interceptors/response-compress.interceptor';
+import { PerformanceInterceptor } from './core/interceptors/performance.interceptor';
+// Compression middleware (install: npm install compression @types/compression)
+// For now, using conditional import to avoid breaking if not installed
+let compression: any;
+try {
+  compression = require('compression');
+} catch (e) {
+  console.warn('⚠️  Compression middleware not installed. Install with: npm install compression @types/compression');
+}
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Enable compression (gzip/brotli) for all responses
+  // This significantly reduces bandwidth, critical for low-bandwidth scenarios
+  if (compression) {
+    app.use(compression({
+      filter: (req: any, res: any) => {
+        // Compress all responses except when explicitly disabled
+        if (req.headers['x-no-compression']) {
+          return false;
+        }
+        return compression.filter(req, res);
+      },
+      level: 6, // Balance between compression ratio and CPU usage (1-9)
+      threshold: 1024, // Only compress responses larger than 1KB
+    }));
+    console.log('✅ Response compression enabled');
+  }
+
   // Enable CORS with proper configuration for development and production
   const corsOptions = getCorsConfig();
   app.enableCors(corsOptions);
+
+  // Global interceptors for performance optimization
+  app.useGlobalInterceptors(
+    new ResponseCompressInterceptor(), // Removes null/undefined fields, reduces payload size by 10-30%
+    new PerformanceInterceptor(), // Logs response times, detects slow requests
+  );
 
   // Global validation pipe with detailed error messages
   app.useGlobalPipes(

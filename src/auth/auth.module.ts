@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { AttendanceModule } from '../attendance/attendance.module';
+import { CacheModule } from '../core/cache/cache.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { AttendanceModule } from '../attendance/attendance.module';
       inject: [ConfigService],
     }),
     forwardRef(() => AttendanceModule),
+    CacheModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, LocalStrategy],
