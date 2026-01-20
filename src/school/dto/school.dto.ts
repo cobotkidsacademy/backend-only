@@ -1,4 +1,4 @@
-import { IsString, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsOptional, MinLength, IsUrl } from 'class-validator';
 
 export class CreateSchoolDto {
   @IsString()
@@ -109,4 +109,18 @@ export class BulkCreateStudentDto {
 
   @IsString({ each: true })
   students: string[]; // Array of "firstname lastname" strings
+}
+
+export class CreateClassFormDto {
+  @IsString()
+  @MinLength(1, { message: 'Form name is required' })
+  name: string;
+
+  @IsOptional()
+  @IsUrl({}, { message: 'Icon URL must be a valid URL' })
+  icon_url?: string;
+
+  @IsString()
+  @IsUrl({}, { message: 'Form URL must be a valid URL' })
+  form_url: string;
 }

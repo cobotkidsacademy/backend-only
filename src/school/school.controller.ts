@@ -14,7 +14,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { SchoolService } from './school.service';
-import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto, BulkCreateStudentDto } from './dto/school.dto';
+import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto, BulkCreateStudentDto, CreateClassFormDto } from './dto/school.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('schools')

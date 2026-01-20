@@ -17,6 +17,7 @@ import { CurriculumModule } from './curriculum/curriculum.module';
 import { EditorModule } from './editor/editor.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { BugsModule } from './bugs/bugs.module';
+import { FormsModule } from './forms/forms.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { BugsModule } from './bugs/bugs.module';
     EditorModule,
     AttendanceModule,
     BugsModule,
+    FormsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
