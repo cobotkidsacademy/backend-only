@@ -202,6 +202,21 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Put('student/profile/details')
+  async updateStudentProfileDetails(
+    @Request() req,
+    @Body() body: {
+      guardian_name?: string;
+      guardian_phone?: string;
+      gender?: 'male' | 'female' | 'other' | null;
+      date_of_birth?: string | null;
+      profile_image_url?: string;
+    },
+  ) {
+    return this.authService.updateStudentProfileDetails(req.user.sub, body);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Put('student/profile/full')
   async updateStudentProfileFull(@Request() req, @Body() dto: UpdateStudentProfileDto) {
     return this.authService.updateStudentProfileFull(req.user.sub, dto);

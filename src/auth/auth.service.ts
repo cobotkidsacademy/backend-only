@@ -265,6 +265,9 @@ export class AuthService {
         email,
         profile_image_url,
         gender,
+        guardian_name,
+        guardian_phone,
+        date_of_birth,
         status,
         last_login,
         login_count,
@@ -408,6 +411,64 @@ export class AuthService {
     if (error) {
       this.logger.error('Error updating student profile:', error);
       throw new UnauthorizedException('Failed to update profile');
+    }
+
+    return data;
+  }
+
+  async updateStudentProfileDetails(
+    studentId: string,
+    updateData: {
+      guardian_name?: string;
+      guardian_phone?: string;
+      gender?: 'male' | 'female' | 'other' | null;
+      date_of_birth?: string | null;
+      profile_image_url?: string;
+    },
+  ) {
+    const updatePayload: any = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (updateData.guardian_name !== undefined) {
+      updatePayload.guardian_name = updateData.guardian_name || null;
+    }
+    if (updateData.guardian_phone !== undefined) {
+      updatePayload.guardian_phone = updateData.guardian_phone || null;
+    }
+    if (updateData.gender !== undefined) {
+      updatePayload.gender = updateData.gender || null;
+    }
+    if (updateData.date_of_birth !== undefined) {
+      updatePayload.date_of_birth = updateData.date_of_birth || null;
+    }
+    if (updateData.profile_image_url !== undefined) {
+      updatePayload.profile_image_url = updateData.profile_image_url || null;
+    }
+
+    const { data, error } = await this.supabase
+      .from('students')
+      .update(updatePayload)
+      .eq('id', studentId)
+      .select(`
+        id,
+        username,
+        first_name,
+        last_name,
+        email,
+        profile_image_url,
+        gender,
+        guardian_name,
+        guardian_phone,
+        date_of_birth,
+        class:classes(id, name, level),
+        school:schools(id, name, code)
+      `)
+      .single();
+
+    if (error) {
+      this.logger.error('Error updating student profile details:', error);
+      throw new UnauthorizedException('Failed to update profile details');
     }
 
     return data;

@@ -15,6 +15,7 @@ import { CourseService } from './course.service';
 import {
   CreateCourseDto,
   UpdateCourseDto,
+  CreateLevelDto,
   UpdateLevelDto,
   CreateTopicDto,
   UpdateTopicDto,
@@ -67,6 +68,12 @@ export class CourseController {
   }
 
   // ============ LEVEL ENDPOINTS ============
+
+  @Post(':courseId/levels')
+  @UseGuards(JwtAuthGuard)
+  async createLevel(@Param('courseId') courseId: string, @Body() dto: CreateLevelDto) {
+    return this.courseService.createLevel({ ...dto, course_id: courseId });
+  }
 
   @Get(':courseId/levels')
   @UseGuards(JwtAuthGuard)

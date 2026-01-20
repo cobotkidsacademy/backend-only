@@ -8,6 +8,13 @@ import {
   ClassWithAllocation,
   ClassStatus,
 } from './dto/class-code.dto';
+import {
+  getNairobiTime,
+  getNairobiDayOfWeek,
+  createNairobiDateTime,
+  formatNairobiTime,
+  getNairobiDateComponents,
+} from '../utils/timezone.util';
 
 @Injectable()
 export class ClassCodeService {
@@ -27,42 +34,26 @@ export class ClassCodeService {
   // ==================== NETWORK TIME ====================
 
   /**
-   * Get current time from database server (network time)
-   * This ensures consistent time across all operations regardless of client machine time
+   * Get current time in Nairobi timezone
+   * This ensures consistent time across all operations using Africa/Nairobi timezone
    */
   private async getNetworkTime(): Promise<Date> {
-    // Try to get time from database using a simple query
-    try {
-      const { data, error } = await this.supabase
-        .from('classes')
-        .select('created_at')
-        .limit(1);
-      
-      if (!error && data) {
-        // The server has successfully connected to DB - use server time
-        // Server time is reliable as it's on the same network/infrastructure
-        return new Date();
-      }
-    } catch (e) {
-      // If DB query fails, still use server time
-    }
-    
-    return new Date();
+    // Use Nairobi timezone for all time operations
+    return getNairobiTime();
   }
 
   /**
-   * Public method to get network time for controllers
+   * Public method to get server time in Nairobi timezone
    */
   async getServerTimePublic(): Promise<Date> {
-    return new Date();
+    return getNairobiTime();
   }
 
   /**
    * Debug method to get full class info for troubleshooting
    */
   async debugClassInfo(classId: string): Promise<any> {
-    const networkTime = new Date();
-    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const networkTime = await this.getNetworkTime();
     
     // Get schedule
     const { data: schedule } = await this.supabase
@@ -79,7 +70,7 @@ export class ClassCodeService {
       .eq('class_id', classId)
       .eq('status', 'active');
 
-    const today = this.getDayOfWeekFromDate(networkTime).trim().toLowerCase();
+    const today = getNairobiDayOfWeek(networkTime).toLowerCase();
     const scheduleDay = schedule ? (schedule.day_of_week || '').trim().toLowerCase() : null;
     
     let startTime = null;
@@ -96,16 +87,25 @@ export class ClassCodeService {
       withinWindow = this.isWithinGenerationWindowSync(schedule, networkTime);
     }
     
+    const nairobiComponents = getNairobiDateComponents(networkTime);
+    
     return {
       server_time: {
         iso: networkTime.toISOString(),
-        local: networkTime.toLocaleString(),
+        nairobi: formatNairobiTime(networkTime, {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        }),
         day: today,
-        day_index: networkTime.getDay(),
-        hours: networkTime.getHours(),
-        minutes: networkTime.getMinutes(),
-        seconds: networkTime.getSeconds(),
-        timezone_offset: networkTime.getTimezoneOffset(),
+        hours: nairobiComponents.hours,
+        minutes: nairobiComponents.minutes,
+        seconds: nairobiComponents.seconds,
+        timezone: 'Africa/Nairobi (UTC+3)',
       },
       schedule: schedule ? {
         id: schedule.id,
@@ -119,9 +119,9 @@ export class ClassCodeService {
       } : null,
       calculated: {
         class_start_datetime: startTime?.toISOString(),
-        class_start_local: startTime?.toLocaleString(),
+        class_start_nairobi: startTime ? formatNairobiTime(startTime) : null,
         class_end_datetime: endTime?.toISOString(),
-        class_end_local: endTime?.toLocaleString(),
+        class_end_nairobi: endTime ? formatNairobiTime(endTime) : null,
         days_match: scheduleDay === today,
         current_time_ms: networkTime.getTime(),
         start_time_ms: startTime?.getTime(),
@@ -140,26 +140,23 @@ export class ClassCodeService {
   }
 
   /**
-   * Get current day of week from network time
+   * Get current day of week from network time in Nairobi timezone
    */
   private async getNetworkDayOfWeek(): Promise<string> {
     const networkTime = await this.getNetworkTime();
-    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    return days[networkTime.getDay()];
+    return getNairobiDayOfWeek(networkTime);
   }
 
   // ==================== HELPER METHODS ====================
 
   private getDayOfWeekFromDate(date: Date): string {
-    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    return days[date.getDay()];
+    return getNairobiDayOfWeek(date);
   }
 
   private getTomorrowDayOfWeekFromDate(date: Date): string {
-    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const tomorrow = new Date(date);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    return days[tomorrow.getDay()];
+    return getNairobiDayOfWeek(tomorrow);
   }
 
   private parseTime(timeStr: string): { hours: number; minutes: number } {
@@ -170,11 +167,8 @@ export class ClassCodeService {
   private getClassDateTimeFromBase(baseDate: Date, timeStr: string, addDays: number = 0): Date {
     const { hours, minutes } = this.parseTime(timeStr);
     
-    const classDate = new Date(baseDate);
-    classDate.setDate(classDate.getDate() + addDays);
-    classDate.setHours(hours, minutes, 0, 0);
-    
-    return classDate;
+    // Use Nairobi timezone utility to create the datetime
+    return createNairobiDateTime(baseDate, hours, minutes, addDays);
   }
 
   private isWithinGenerationWindowSync(schedule: any, networkTime: Date): boolean {

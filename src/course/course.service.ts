@@ -3,6 +3,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import {
   CreateCourseDto,
   UpdateCourseDto,
+  CreateLevelDto,
   UpdateLevelDto,
   CreateTopicDto,
   UpdateTopicDto,
@@ -112,6 +113,79 @@ export class CourseService {
   }
 
   async updateCourse(id: string, dto: UpdateCourseDto) {
+    // Get current course data
+    const { data: currentCourse, error: fetchError } = await this.supabase
+      .from('courses')
+      .select('level_count, name')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !currentCourse) {
+      throw new Error('Course not found');
+    }
+
+    // Handle level_count changes
+    if (dto.level_count !== undefined) {
+      // Get existing levels
+      const { data: existingLevels } = await this.supabase
+        .from('course_levels')
+        .select('id, level_number')
+        .eq('course_id', id)
+        .order('level_number', { ascending: true });
+
+      const existingLevelNumbers = existingLevels?.map(l => l.level_number) || [];
+      const maxExistingLevel = existingLevelNumbers.length > 0 ? Math.max(...existingLevelNumbers) : 0;
+
+      if (dto.level_count > maxExistingLevel) {
+        // Create missing levels - start from max existing level + 1 up to the new level_count
+        const levelsToCreate = [];
+        for (let i = maxExistingLevel + 1; i <= dto.level_count; i++) {
+          levelsToCreate.push({
+            course_id: id,
+            level_number: i,
+            name: `${currentCourse.name} - Level ${i}`,
+            order_index: i - 1,
+            is_free: true,
+            price: 0,
+            currency: 'KES',
+          });
+        }
+
+        if (levelsToCreate.length > 0) {
+          const { error: levelsError } = await this.supabase
+            .from('course_levels')
+            .insert(levelsToCreate);
+
+          if (levelsError) {
+            this.logger.error(`Failed to create missing levels: ${levelsError.message}`);
+            throw new Error(`Failed to create missing levels: ${levelsError.message}`);
+          }
+
+          this.logger.log(`Created ${levelsToCreate.length} missing level(s) for course ${id}`);
+        }
+      } else if (dto.level_count < maxExistingLevel) {
+        // Delete excess levels - delete from highest level number down
+        const levelsToDelete = existingLevels
+          ?.filter(l => l.level_number > dto.level_count)
+          .map(l => l.id) || [];
+
+        if (levelsToDelete.length > 0) {
+          const { error: deleteError } = await this.supabase
+            .from('course_levels')
+            .delete()
+            .in('id', levelsToDelete);
+
+          if (deleteError) {
+            this.logger.error(`Failed to delete excess levels: ${deleteError.message}`);
+            throw new Error(`Failed to delete excess levels: ${deleteError.message}`);
+          }
+
+          this.logger.log(`Deleted ${levelsToDelete.length} excess level(s) for course ${id}`);
+        }
+      }
+    }
+
+    // Update the course
     const { data, error } = await this.supabase
       .from('courses')
       .update(dto)
@@ -134,6 +208,81 @@ export class CourseService {
   }
 
   // ============ LEVEL METHODS ============
+
+  async createLevel(dto: CreateLevelDto) {
+    this.logger.log(`Creating level for course ${dto.course_id}: ${dto.name}`);
+    
+    // Get the course to check level_count
+    const { data: course } = await this.supabase
+      .from('courses')
+      .select('level_count')
+      .eq('id', dto.course_id)
+      .single();
+
+    if (!course) {
+      throw new Error('Course not found');
+    }
+
+    // Get the max level_number for this course
+    const { data: existingLevels } = await this.supabase
+      .from('course_levels')
+      .select('level_number')
+      .eq('course_id', dto.course_id)
+      .order('level_number', { ascending: false })
+      .limit(1);
+
+    const nextLevelNumber = existingLevels && existingLevels.length > 0 
+      ? existingLevels[0].level_number + 1 
+      : 1;
+
+    // Get max order_index
+    const { data: existingOrder } = await this.supabase
+      .from('course_levels')
+      .select('order_index')
+      .eq('course_id', dto.course_id)
+      .order('order_index', { ascending: false })
+      .limit(1);
+
+    const orderIndex = existingOrder && existingOrder.length > 0 
+      ? existingOrder[0].order_index + 1 
+      : 0;
+
+    const { data, error } = await this.supabase
+      .from('course_levels')
+      .insert({
+        course_id: dto.course_id,
+        level_number: nextLevelNumber,
+        name: dto.name,
+        description: dto.description || null,
+        order_index: orderIndex,
+        is_free: dto.is_free ?? true,
+        price: dto.price ?? 0,
+        currency: dto.currency || 'KES',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      this.logger.error(`Failed to create level: ${error.message}`);
+      throw new Error(error.message);
+    }
+
+    // Update course level_count
+    const { data: updatedCourse } = await this.supabase
+      .from('courses')
+      .select('level_count')
+      .eq('id', dto.course_id)
+      .single();
+
+    const newLevelCount = (updatedCourse?.level_count || 0) + 1;
+    await this.supabase
+      .from('courses')
+      .update({ level_count: newLevelCount })
+      .eq('id', dto.course_id);
+
+    this.logger.log(`Level created: ${data.name} (Level ${nextLevelNumber})`);
+    return data;
+  }
 
   async getLevelsByCoruseId(courseId: string) {
     const { data, error } = await this.supabase
@@ -366,11 +515,28 @@ export class CourseService {
       .from('note_elements')
       .update(dto)
       .eq('id', id)
-      .select()
-      .single();
+      .select();
 
-    if (error) throw new Error(error.message);
-    return data;
+    // If Supabase returns an error that indicates "no rows updated", just log and
+    // treat it as a no-op instead of throwing – the element may have been deleted
+    if (error) {
+      this.logger.warn(
+        `Non-fatal error updating note element ${id}: ${error.message}`,
+      );
+      return { success: false, error: error.message };
+    }
+
+    if (!data || data.length === 0) {
+      // No element with this id – log and return a soft result so the API
+      // still responds with 200 and doesn't spam the logs.
+      this.logger.warn(
+        `Note element with id ${id} not found during update (no rows affected)`,
+      );
+      return { success: false, notFound: true };
+    }
+
+    // Return the updated row for callers that use it
+    return data[0];
   }
 
   async updateElementsPosition(dto: UpdateElementsPositionDto) {

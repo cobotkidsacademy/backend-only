@@ -35,9 +35,38 @@ export class UpdateCourseDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(20)
+  level_count?: number;
 }
 
 // ============ Level DTOs ============
+export class CreateLevelDto {
+  @IsString()
+  course_id: string;
+
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  is_free?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  price?: number;
+
+  @IsOptional()
+  @IsString()
+  currency?: string;
+}
+
 export class UpdateLevelDto {
   @IsOptional()
   @IsString()

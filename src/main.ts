@@ -19,6 +19,9 @@ try {
 }
 
 async function bootstrap() {
+  // Set timezone to Africa/Nairobi for all date operations
+  process.env.TZ = 'Africa/Nairobi';
+  
   const app = await NestFactory.create(AppModule);
 
   // Enable compression (gzip/brotli) for all responses
