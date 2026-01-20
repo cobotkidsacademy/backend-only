@@ -14,7 +14,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { SchoolService } from './school.service';
-import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto } from './dto/school.dto';
+import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto, BulkCreateStudentDto } from './dto/school.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('schools')
@@ -131,6 +131,13 @@ export class SchoolController {
   async createStudent(@Body() dto: CreateStudentDto) {
     this.logger.log(`Creating student with data: ${JSON.stringify(dto)}`);
     return this.schoolService.createStudent(dto);
+  }
+
+  @Post('students/bulk')
+  @UseGuards(JwtAuthGuard)
+  async bulkCreateStudents(@Body() dto: BulkCreateStudentDto) {
+    this.logger.log(`Bulk creating ${dto.students.length} students`);
+    return this.schoolService.bulkCreateStudents(dto);
   }
 
   @Get('classes/:classId/students')

@@ -5,6 +5,9 @@ export class GenerateCodeDto {
   class_id: string;
 
   @IsUUID()
+  topic_id: string;
+
+  @IsUUID()
   @IsOptional()
   generated_by_tutor_id?: string;
 }
@@ -24,6 +27,7 @@ export interface ClassCode {
   id: string;
   class_id: string;
   schedule_id: string;
+  topic_id: string | null;
   code: string;
   valid_from: string;
   valid_until: string;
@@ -38,6 +42,20 @@ export interface ClassCode {
     middle_name: string;
     last_name: string;
   };
+  topic?: {
+    id: string;
+    name: string;
+    level_id: string;
+    course_level?: {
+      id: string;
+      course_id: string;
+      course?: {
+        id: string;
+        name: string;
+        code: string;
+      };
+    };
+  } | null;
 }
 
 export interface ClassWithAllocation {
@@ -72,7 +90,23 @@ export interface ClassWithAllocation {
     email: string;
   } | null;
   student_count: number;
-  current_code: ClassCode | null;
+  current_code: {
+    code: string;
+    valid_from: string;
+    valid_until: string;
+    generated_at: string;
+    topic_id?: string | null;
+    topic?: {
+      id: string;
+      name: string;
+      course_level?: {
+        name: string;
+        course?: {
+          name: string;
+        } | null;
+      } | null;
+    } | null;
+  } | null;
   class_status: ClassStatus;
   can_generate_code: boolean;
   next_class_datetime: string | null;

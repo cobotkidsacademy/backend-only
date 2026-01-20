@@ -37,7 +37,22 @@ export interface ClassCodeValidationResponse {
   valid: boolean;
   message: string;
   course_level_id?: string;
-  topic_redirect_url?: string;
+  topic_id?: string | null;
+  topic?: {
+    id: string;
+    name: string;
+    level_id: string;
+    course_level?: {
+      id: string;
+      course_id: string;
+      course?: {
+        id: string;
+        name: string;
+        code: string;
+      };
+    };
+  } | null;
+  topic_notes?: any[] | null;
 }
 
 

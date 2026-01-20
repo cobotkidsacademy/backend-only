@@ -330,6 +330,34 @@ export class ClassCodeService {
       throw new BadRequestException('Class does not have any tutors assigned. Please assign a tutor first.');
     }
 
+    // Validate topic belongs to an enrolled course level for this class
+    const { data: topic, error: topicError } = await this.supabase
+      .from('topics')
+      .select('id, name, level_id')
+      .eq('id', dto.topic_id)
+      .single();
+
+    if (topicError || !topic) {
+      throw new NotFoundException('Topic not found');
+    }
+
+    if (!topic.level_id) {
+      throw new NotFoundException('Topic does not have an associated course level');
+    }
+
+    // Check if the topic's course level is enrolled for this class
+    const { data: assignment, error: assignmentError } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('id, enrollment_status')
+      .eq('class_id', dto.class_id)
+      .eq('course_level_id', topic.level_id)
+      .eq('enrollment_status', 'enrolled')
+      .single();
+
+    if (assignmentError || !assignment) {
+      throw new BadRequestException('Topic must belong to a course level that is enrolled for this class');
+    }
+
     // Check if within generation window (during class time)
     const withinWindow = this.isWithinGenerationWindowSync(schedule, serverTime);
     
@@ -383,6 +411,7 @@ export class ClassCodeService {
       .insert({
         class_id: dto.class_id,
         schedule_id: schedule.id,
+        topic_id: dto.topic_id,
         code,
         valid_from: validFrom.toISOString(),
         valid_until: validUntil.toISOString(),
@@ -402,7 +431,48 @@ export class ClassCodeService {
     return newCode;
   }
 
-  async validateCode(dto: ValidateCodeDto): Promise<{ valid: boolean; message: string; class_code?: ClassCode; server_time?: string }> {
+  async getTopicsForEnrolledLevels(classId: string) {
+    // Get enrolled course levels for this class
+    const { data: assignments, error: assignmentsError } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('course_level_id')
+      .eq('class_id', classId)
+      .eq('enrollment_status', 'enrolled');
+
+    if (assignmentsError || !assignments || assignments.length === 0) {
+      return [];
+    }
+
+    const courseLevelIds = assignments.map((a: any) => a.course_level_id);
+
+    // Get all topics for these course levels
+    const { data: topics, error: topicsError } = await this.supabase
+      .from('topics')
+      .select(`
+        id,
+        name,
+        description,
+        order_index,
+        level_id,
+        course_level:course_levels(
+          id,
+          name,
+          course_id,
+          course:courses(id, name, code)
+        )
+      `)
+      .in('level_id', courseLevelIds)
+      .eq('status', 'active')
+      .order('order_index', { ascending: true });
+
+    if (topicsError) {
+      return [];
+    }
+
+    return topics || [];
+  }
+
+  async validateCode(dto: ValidateCodeDto): Promise<{ valid: boolean; message: string; class_code?: ClassCode; server_time?: string; topic_id?: string }> {
     // Get network time
     const networkTime = await this.getNetworkTime();
 
@@ -410,7 +480,17 @@ export class ClassCodeService {
       .from('class_codes')
       .select(`
         *,
-        generated_by:tutors(id, first_name, middle_name, last_name)
+        generated_by:tutors(id, first_name, middle_name, last_name),
+        topic:topics(
+          id,
+          name,
+          level_id,
+          course_level:course_levels(
+            id,
+            course_id,
+            course:courses(id, name, code)
+          )
+        )
       `)
       .eq('class_id', dto.class_id)
       .eq('code', dto.code)
@@ -437,7 +517,13 @@ export class ClassCodeService {
       return { valid: false, message: 'Code has expired', class_code: classCode, server_time: networkTime.toISOString() };
     }
 
-    return { valid: true, message: 'Code is valid', class_code: classCode, server_time: networkTime.toISOString() };
+    return { 
+      valid: true, 
+      message: 'Code is valid', 
+      class_code: classCode, 
+      server_time: networkTime.toISOString(),
+      topic_id: classCode.topic_id || null,
+    };
   }
 
   async getActiveCodeForClass(classId: string): Promise<ClassCode | null> {
@@ -615,7 +701,16 @@ export class ClassCodeService {
       .from('class_codes')
       .select(`
         *,
-        generated_by:tutors(id, first_name, middle_name, last_name)
+        generated_by:tutors(id, first_name, middle_name, last_name),
+        topic:topics(
+          id,
+          name,
+          course_level:course_levels(
+            id,
+            name,
+            course:courses(id, name, code)
+          )
+        )
       `)
       .in('class_id', classIds)
       .eq('status', 'active')
@@ -664,7 +759,31 @@ export class ClassCodeService {
           email: tutorInfo.email,
         } : null,
         student_count: studentCount,
-        current_code: currentCode,
+        current_code: currentCode ? {
+          code: currentCode.code,
+          valid_from: currentCode.valid_from,
+          valid_until: currentCode.valid_until,
+          generated_at: currentCode.generated_at,
+          topic_id: currentCode.topic_id || null,
+          topic: currentCode.topic ? (() => {
+            const topic = Array.isArray(currentCode.topic) ? currentCode.topic[0] : currentCode.topic;
+            if (!topic) return null;
+            
+            const courseLevel = Array.isArray(topic.course_level) ? topic.course_level[0] : topic.course_level;
+            const course = courseLevel?.course 
+              ? (Array.isArray(courseLevel.course) ? courseLevel.course[0] : courseLevel.course)
+              : null;
+            
+            return {
+              id: topic.id,
+              name: topic.name,
+              course_level: courseLevel ? {
+                name: courseLevel.name,
+                course: course ? { name: course.name } : null,
+              } : null,
+            };
+          })() : null,
+        } : null,
         class_status: classStatus,
         can_generate_code: canGenerateCode,
         next_class_datetime: nextClassDatetime,

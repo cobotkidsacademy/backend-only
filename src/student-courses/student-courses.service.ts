@@ -151,10 +151,22 @@ export class StudentCoursesService {
     const { data: timeData } = await this.supabase.rpc('get_current_timestamp');
     const networkTime = timeData ? new Date(timeData) : new Date();
 
-    // Verify the class code
+    // Verify the class code and get topic info
     const { data: classCode, error: codeError } = await this.supabase
       .from('class_codes')
-      .select('*')
+      .select(`
+        *,
+        topic:topics(
+          id,
+          name,
+          level_id,
+          course_level:course_levels(
+            id,
+            course_id,
+            course:courses(id, name, code)
+          )
+        )
+      `)
       .eq('class_id', classId)
       .eq('code', code)
       .eq('status', 'active')
@@ -168,10 +180,69 @@ export class StudentCoursesService {
       };
     }
 
+    // If topic is specified in code, verify it belongs to the selected course level
+    if (classCode.topic_id && classCode.topic) {
+      const topicLevelId = classCode.topic.level_id;
+      if (topicLevelId !== courseLevelId) {
+        return {
+          valid: false,
+          message: 'This code is for a different course level',
+        };
+      }
+    }
+
+    // If topic is specified, pre-fetch topic notes (note_elements) for faster loading
+    let topicNotes = null;
+    if (classCode.topic_id && classCode.topic) {
+      try {
+        // Get all notes for this topic first
+        const { data: notes } = await this.supabase
+          .from('notes')
+          .select('id')
+          .eq('topic_id', classCode.topic_id)
+          .eq('status', 'active');
+
+        if (notes && notes.length > 0) {
+          // Get all note_elements for these notes (this is what frontend uses)
+          const noteIds = notes.map((n: any) => n.id);
+          const { data: noteElements } = await this.supabase
+            .from('note_elements')
+            .select(`
+              id,
+              element_type,
+              content,
+              position_x,
+              position_y,
+              width,
+              height,
+              z_index,
+              font_size,
+              font_weight,
+              font_family,
+              font_color,
+              text_align,
+              background_color,
+              note_id,
+              order_index
+            `)
+            .in('note_id', noteIds)
+            .order('z_index', { ascending: true });
+          
+          topicNotes = noteElements || [];
+        }
+      } catch (err) {
+        // Don't fail validation if notes fetch fails
+        console.error('Error pre-fetching notes:', err);
+      }
+    }
+
     return {
       valid: true,
       message: 'Class code verified successfully',
       course_level_id: courseLevelId,
+      topic_id: classCode.topic_id || null,
+      topic: classCode.topic || null,
+      topic_notes: topicNotes,
     };
   }
 

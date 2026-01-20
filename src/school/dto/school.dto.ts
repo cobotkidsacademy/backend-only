@@ -99,3 +99,14 @@ export class CreateStudentDto {
   @IsString()
   gender?: string;
 }
+
+export class BulkCreateStudentDto {
+  @IsString()
+  class_id: string;
+
+  @IsString()
+  school_id: string;
+
+  @IsString({ each: true })
+  students: string[]; // Array of "firstname lastname" strings
+}

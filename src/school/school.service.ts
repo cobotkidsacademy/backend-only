@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
 import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto } from './dto/school.dto';
@@ -287,6 +287,81 @@ export class SchoolService {
       ...data,
       generated_username: username,
       generated_password: plainPassword,
+    };
+  }
+
+  async bulkCreateStudents(dto: { class_id: string; school_id: string; students: string[] }) {
+    // Get school code for username generation
+    const { data: school } = await this.supabase
+      .from('schools')
+      .select('code')
+      .eq('id', dto.school_id)
+      .single();
+
+    if (!school) {
+      throw new NotFoundException('School not found');
+    }
+
+    // Parse student names and create student objects
+    const studentsToInsert = [];
+    const defaultPassword = '1234';
+    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+    for (const studentName of dto.students) {
+      // Trim and split by space
+      const trimmed = studentName.trim();
+      if (!trimmed) continue; // Skip empty lines
+
+      const parts = trimmed.split(/\s+/);
+      if (parts.length < 2) {
+        // If only one word, use it as first name and empty last name
+        parts.push('');
+      }
+
+      const firstName = parts[0];
+      const lastName = parts.slice(1).join(' '); // Join remaining parts as last name
+
+      if (!firstName) continue; // Skip if no first name
+
+      // Generate username
+      const username = await this.generateStudentUsername(
+        school.code,
+        firstName,
+        lastName,
+      );
+
+      studentsToInsert.push({
+        class_id: dto.class_id,
+        school_id: dto.school_id,
+        first_name: firstName,
+        last_name: lastName || '',
+        username: username,
+        password_hash: passwordHash,
+        plain_password: defaultPassword,
+      });
+    }
+
+    if (studentsToInsert.length === 0) {
+      throw new BadRequestException('No valid students to create');
+    }
+
+    // Insert all students
+    const { data, error } = await this.supabase
+      .from('students')
+      .insert(studentsToInsert)
+      .select();
+
+    if (error) {
+      throw new ConflictException(error.message);
+    }
+
+    return {
+      created: data.length,
+      students: data.map((s: any) => ({
+        ...s,
+        generated_username: s.username,
+        generated_password: defaultPassword,
+      })),
     };
   }
 

@@ -14,6 +14,14 @@ export class ClassCodeController {
     if (req.user.role === 'tutor') {
       dto.generated_by_tutor_id = req.user.sub;
     }
+    
+    // Log the request for debugging
+    console.log('Generate code request:', {
+      class_id: dto.class_id,
+      topic_id: dto.topic_id,
+      generated_by_tutor_id: dto.generated_by_tutor_id,
+    });
+    
     return this.classCodeService.generateCode(dto);
   }
 
@@ -87,6 +95,12 @@ export class ClassCodeController {
   @Get('debug/:classId')
   async debugClass(@Param('classId') classId: string) {
     return this.classCodeService.debugClassInfo(classId);
+  }
+
+  @Get('class/:classId/topics')
+  @UseGuards(JwtAuthGuard)
+  async getTopicsForClass(@Param('classId') classId: string) {
+    return this.classCodeService.getTopicsForEnrolledLevels(classId);
   }
 }
 
