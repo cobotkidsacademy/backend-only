@@ -250,6 +250,30 @@ export class SchoolService {
       throw new NotFoundException('School not found');
     }
 
+    // Check if a student with the same name already exists in this school
+    const existingByName = await this.findExistingStudentByName(
+      dto.school_id,
+      dto.first_name,
+      dto.last_name,
+    );
+
+    if (existingByName) {
+      // Do NOT auto-generate a new username for the same name.
+      // Require the user to provide an alternative name.
+      throw new ConflictException({
+        message:
+          'A student with this first and last name already exists in this school. Please use an alternative name.',
+        conflict_type: 'student_name',
+        existing_student: {
+          id: existingByName.id,
+          first_name: existingByName.first_name,
+          last_name: existingByName.last_name,
+          class_id: existingByName.class_id,
+          username: existingByName.username,
+        },
+      });
+    }
+
     // Generate username
     const username = await this.generateStudentUsername(
       school.code,
@@ -306,6 +330,7 @@ export class SchoolService {
     const studentsToInsert = [];
     const defaultPassword = '1234';
     const passwordHash = await bcrypt.hash(defaultPassword, 10);
+    const conflicts: any[] = [];
 
     for (const studentName of dto.students) {
       // Trim and split by space
@@ -322,6 +347,30 @@ export class SchoolService {
       const lastName = parts.slice(1).join(' '); // Join remaining parts as last name
 
       if (!firstName) continue; // Skip if no first name
+
+      // Check if a student with the same name already exists in this school
+      const existingByName = await this.findExistingStudentByName(
+        dto.school_id,
+        firstName,
+        lastName,
+      );
+
+      if (existingByName) {
+        // Skip creating this student and record the conflict
+        conflicts.push({
+          full_name: trimmed,
+          first_name: firstName,
+          last_name: lastName,
+          existing_student: {
+            id: existingByName.id,
+            first_name: existingByName.first_name,
+            last_name: existingByName.last_name,
+            class_id: existingByName.class_id,
+            username: existingByName.username,
+          },
+        });
+        continue;
+      }
 
       // Generate username
       const username = await this.generateStudentUsername(
@@ -341,27 +390,34 @@ export class SchoolService {
       });
     }
 
-    if (studentsToInsert.length === 0) {
+    let createdStudents: any[] = [];
+
+    if (studentsToInsert.length > 0) {
+      // Insert all non-conflicting students
+      const { data, error } = await this.supabase
+        .from('students')
+        .insert(studentsToInsert)
+        .select();
+
+      if (error) {
+        throw new ConflictException(error.message);
+      }
+
+      createdStudents = data || [];
+    }
+
+    if (createdStudents.length === 0 && conflicts.length === 0) {
       throw new BadRequestException('No valid students to create');
     }
 
-    // Insert all students
-    const { data, error } = await this.supabase
-      .from('students')
-      .insert(studentsToInsert)
-      .select();
-
-    if (error) {
-      throw new ConflictException(error.message);
-    }
-
     return {
-      created: data.length,
-      students: data.map((s: any) => ({
+      created: createdStudents.length,
+      students: createdStudents.map((s: any) => ({
         ...s,
         generated_username: s.username,
         generated_password: defaultPassword,
       })),
+      conflicts,
     };
   }
 
@@ -445,6 +501,28 @@ export class SchoolService {
   // =============================================
   // HELPER METHODS
   // =============================================
+
+  /**
+   * Find an existing student in a school by first_name + last_name
+   * This is used to prevent creating multiple students with the exact same name.
+   */
+  private async findExistingStudentByName(
+    schoolId: string,
+    firstName: string,
+    lastName: string,
+  ) {
+    if (!firstName) return null;
+
+    const { data } = await this.supabase
+      .from('students')
+      .select('id, first_name, last_name, class_id, username')
+      .eq('school_id', schoolId)
+      .eq('first_name', firstName)
+      .eq('last_name', lastName || '')
+      .maybeSingle();
+
+    return data || null;
+  }
 
   private generateSchoolCode(name: string): string {
     // Take first letters of each word, uppercase, max 6 chars

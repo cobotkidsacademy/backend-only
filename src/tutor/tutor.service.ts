@@ -34,7 +34,7 @@ export class TutorService {
     }
 
     // Generate password: mname + cocobotkids2026
-    const plainPassword = `${dto.middle_name.toLowerCase()}cocobotkids2026`;
+    const plainPassword = `${dto.middle_name.toLowerCase()}cobotkids2026`;
     const passwordHash = await bcrypt.hash(plainPassword, 10);
 
     const { data, error } = await this.supabase
