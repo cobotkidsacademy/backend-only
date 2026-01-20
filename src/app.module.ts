@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { KeepAliveService } from './core/keep-alive.service';
 import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
 import { SchoolModule } from './school/school.module';
@@ -47,7 +48,7 @@ import { FormsModule } from './forms/forms.module';
     FormsModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, KeepAliveService],
 })
 export class AppModule {}
 
