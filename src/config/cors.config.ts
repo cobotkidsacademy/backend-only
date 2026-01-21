@@ -138,6 +138,7 @@ export function getCorsConfig(): CorsOptions {
       'X-API-Key',
       'X-CSRF-Token',
       'X-Request-ID',
+      'X-Keep-Alive', // Allow keep-alive header from frontend
     ],
     exposedHeaders: [
       'Authorization',

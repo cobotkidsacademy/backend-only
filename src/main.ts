@@ -45,6 +45,15 @@ async function bootstrap() {
   const corsOptions = getCorsConfig();
   app.enableCors(corsOptions);
 
+  // Add global HTTP keep-alive headers middleware
+  app.use((req: any, res: any, next: any) => {
+    // Set keep-alive headers to maintain persistent connections
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Keep-Alive', 'timeout=65, max=1000'); // 65 seconds, max 1000 requests
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  });
+
   // Global interceptors for performance optimization
   app.useGlobalInterceptors(
     new ResponseCompressInterceptor(), // Removes null/undefined fields, reduces payload size by 10-30%
@@ -124,9 +133,19 @@ async function bootstrap() {
       port = basePort;
     }
 
-    await app.listen(port);
+    const server = await app.listen(port);
+    
+    // Configure HTTP keep-alive settings to prevent connections from timing out
+    if (server && typeof server.setTimeout === 'function') {
+      // Set server timeout to 2 minutes (prevents connections from hanging)
+      server.setTimeout(120000);
+      server.keepAliveTimeout = 65000; // 65 seconds (slightly above default client timeout)
+      server.headersTimeout = 66000; // 66 seconds (should be > keepAliveTimeout)
+    }
+    
     console.log(`🚀 Application is running on: http://localhost:${port}`);
     console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔗 HTTP Keep-Alive enabled (65s timeout)`);
     
     if (port !== basePort) {
       console.warn(
