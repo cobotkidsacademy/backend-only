@@ -82,6 +82,7 @@ async function bootstrap() {
 
   // Get base port from environment or default to 3001
   const basePort = parseInt(process.env.PORT || '3001', 10);
+  const isProduction = process.env.NODE_ENV === 'production';
   const autoKill = process.env.AUTO_KILL_PORT === 'true';
   const maxPortAttempts = parseInt(
     process.env.MAX_PORT_ATTEMPTS || '10',
@@ -91,46 +92,52 @@ async function bootstrap() {
   let port: number;
 
   try {
-    // Check if base port is available
-    const basePortAvailable = await isPortAvailable(basePort);
+    // In production (e.g., Railway), skip port checking and use PORT directly
+    if (isProduction) {
+      port = basePort;
+      console.log(`🚀 Production mode: Using port ${port} from environment variable`);
+    } else {
+      // In development, check if port is available
+      const basePortAvailable = await isPortAvailable(basePort);
 
-    if (!basePortAvailable) {
-      console.warn(
-        `⚠️  Port ${basePort} is already in use. Attempting to find an available port...`,
-      );
+      if (!basePortAvailable) {
+        console.warn(
+          `⚠️  Port ${basePort} is already in use. Attempting to find an available port...`,
+        );
 
-      // Optionally try to kill the process on the base port
-      if (autoKill) {
-        console.log(`Attempting to kill process on port ${basePort}...`);
-        const killed = await killProcessByPort(basePort);
-        if (killed) {
-          // Wait a moment for the port to be released
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          const nowAvailable = await isPortAvailable(basePort);
-          if (nowAvailable) {
-            port = basePort;
-            console.log(`✓ Port ${basePort} is now available after killing the process.`);
+        // Optionally try to kill the process on the base port
+        if (autoKill) {
+          console.log(`Attempting to kill process on port ${basePort}...`);
+          const killed = await killProcessByPort(basePort);
+          if (killed) {
+            // Wait a moment for the port to be released
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            const nowAvailable = await isPortAvailable(basePort);
+            if (nowAvailable) {
+              port = basePort;
+              console.log(`✓ Port ${basePort} is now available after killing the process.`);
+            } else {
+              port = await findAvailablePort(basePort, maxPortAttempts);
+              console.log(
+                `⚠️  Port ${basePort} still in use. Using alternative port: ${port}`,
+              );
+            }
           } else {
             port = await findAvailablePort(basePort, maxPortAttempts);
             console.log(
-              `⚠️  Port ${basePort} still in use. Using alternative port: ${port}`,
+              `⚠️  Could not kill process on port ${basePort}. Using alternative port: ${port}`,
             );
           }
         } else {
+          // Find next available port
           port = await findAvailablePort(basePort, maxPortAttempts);
           console.log(
-            `⚠️  Could not kill process on port ${basePort}. Using alternative port: ${port}`,
+            `ℹ️  Using alternative port: ${port} (base port ${basePort} was in use)`,
           );
         }
       } else {
-        // Find next available port
-        port = await findAvailablePort(basePort, maxPortAttempts);
-        console.log(
-          `ℹ️  Using alternative port: ${port} (base port ${basePort} was in use)`,
-        );
+        port = basePort;
       }
-    } else {
-      port = basePort;
     }
 
     const server = await app.listen(port);
