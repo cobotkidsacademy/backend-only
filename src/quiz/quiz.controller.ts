@@ -28,6 +28,20 @@ export class QuizController {
     return this.quizService.getQuizzesByTopic(topicId);
   }
 
+  @Get('class/:classId')
+  async getQuizzesByClass(
+    @Param('classId') classId: string,
+    @Query('tutor_id') tutorId?: string,
+    @Query('course_level_id') courseLevelId?: string,
+    @Query('enrollment_status') enrollmentStatus?: 'enrolled' | 'completed',
+  ) {
+    return this.quizService.getQuizzesByClass(classId, {
+      tutor_id: tutorId,
+      course_level_id: courseLevelId,
+      enrollment_status: enrollmentStatus,
+    });
+  }
+
   // Specific routes must come before parameterized routes
   @Get('student/:quizId')
   async getQuizForStudent(

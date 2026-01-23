@@ -1306,5 +1306,207 @@ export class QuizService {
 
     return data;
   }
+
+  // ==================== CLASS-BASED QUIZZES ====================
+
+  async getQuizzesByClass(
+    classId: string,
+    filters?: {
+      tutor_id?: string;
+      course_level_id?: string;
+      enrollment_status?: 'enrolled' | 'completed';
+    }
+  ) {
+    // Get tutors assigned to this class
+    const { data: tutorAssignments, error: tutorError } = await this.supabase
+      .from('tutor_class_assignments')
+      .select(`
+        id,
+        tutor_id,
+        role,
+        tutor:tutors(
+          id,
+          first_name,
+          middle_name,
+          last_name,
+          email
+        )
+      `)
+      .eq('class_id', classId)
+      .eq('status', 'active');
+
+    if (tutorError) {
+      throw new BadRequestException(tutorError.message);
+    }
+
+    // Get course level assignments for this class
+    const { data: courseLevelAssignments, error: assignmentError } = await this.supabase
+      .from('class_course_level_assignments')
+      .select(`
+        id,
+        course_level_id,
+        enrollment_status,
+        course_level:course_levels(
+          id,
+          name,
+          level_number,
+          course:courses(id, name, code)
+        )
+      `)
+      .eq('class_id', classId);
+
+    if (assignmentError) {
+      throw new BadRequestException(assignmentError.message);
+    }
+
+    // Apply enrollment status filter if provided
+    let filteredAssignments = courseLevelAssignments || [];
+    if (filters?.enrollment_status) {
+      filteredAssignments = filteredAssignments.filter(
+        (a: any) => a.enrollment_status === filters.enrollment_status
+      );
+    }
+
+    // Apply course level filter if provided
+    if (filters?.course_level_id) {
+      filteredAssignments = filteredAssignments.filter((a: any) => {
+        const level = Array.isArray(a.course_level) ? a.course_level[0] : a.course_level;
+        return level.id === filters.course_level_id;
+      });
+    }
+
+    // Get topics for these course levels
+    const courseLevelIds = filteredAssignments.map((a: any) => {
+      const level = Array.isArray(a.course_level) ? a.course_level[0] : a.course_level;
+      return level.id;
+    });
+
+    let topics: any[] = [];
+    if (courseLevelIds.length > 0) {
+      const { data: topicsData, error: topicsError } = await this.supabase
+        .from('topics')
+        .select(`
+          id,
+          name,
+          order_index,
+          level_id,
+          course_level:course_levels(
+            id,
+            name,
+            level_number,
+            course:courses(id, name, code)
+          )
+        `)
+        .in('level_id', courseLevelIds)
+        .eq('status', 'active')
+        .order('order_index', { ascending: true });
+
+      if (topicsError) {
+        throw new BadRequestException(topicsError.message);
+      }
+      topics = topicsData || [];
+    }
+
+    // Get quizzes for these topics
+    const topicIds = topics.map((t: any) => t.id);
+    let quizzes: any[] = [];
+    if (topicIds.length > 0) {
+      const { data: quizzesData, error: quizzesError } = await this.supabase
+        .from('quizzes')
+        .select(`
+          *,
+          topic:topics(
+            id,
+            name,
+            level_id,
+            course_level:course_levels(
+              id,
+              name,
+              level_number,
+              course:courses(id, name, code)
+            )
+          )
+        `)
+        .in('topic_id', topicIds)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (quizzesError) {
+        // If quiz table doesn't exist, return empty array
+        if (quizzesError.message.includes('Could not find the table') || 
+            quizzesError.message.includes('does not exist')) {
+          quizzes = [];
+        } else {
+          throw new BadRequestException(quizzesError.message);
+        }
+      } else {
+        quizzes = quizzesData || [];
+      }
+    }
+
+    // Filter by tutor if provided
+    let filteredTutors = tutorAssignments || [];
+    if (filters?.tutor_id) {
+      filteredTutors = filteredTutors.filter((t: any) => t.tutor_id === filters.tutor_id);
+    }
+
+    // Build response structure: tutor > course level > enrollment status > quizzes
+    const result = filteredTutors.map((tutorAssignment: any) => {
+      const tutor = Array.isArray(tutorAssignment.tutor) 
+        ? tutorAssignment.tutor[0] 
+        : tutorAssignment.tutor;
+
+      // Group quizzes by course level and enrollment status
+      const courseLevelGroups = filteredAssignments.map((assignment: any) => {
+        const level = Array.isArray(assignment.course_level) 
+          ? assignment.course_level[0] 
+          : assignment.course_level;
+
+        // Get quizzes for topics in this course level
+        const levelQuizzes = quizzes.filter((quiz: any) => {
+          const quizTopic = Array.isArray(quiz.topic) ? quiz.topic[0] : quiz.topic;
+          if (!quizTopic) return false;
+          const quizLevel = Array.isArray(quizTopic.course_level) 
+            ? quizTopic.course_level[0] 
+            : quizTopic.course_level;
+          return quizLevel?.id === level.id;
+        });
+
+        return {
+          course_level: {
+            id: level.id,
+            name: level.name,
+            level_number: level.level_number,
+            course: level.course ? (Array.isArray(level.course) ? level.course[0] : level.course) : null,
+          },
+          enrollment_status: assignment.enrollment_status,
+          quizzes: levelQuizzes.map((q: any) => ({
+            id: q.id,
+            title: q.title,
+            description: q.description,
+            questions_count: q.questions_count,
+            total_points: q.total_points,
+            passing_score: q.passing_score,
+            status: q.status,
+            created_at: q.created_at,
+          })),
+        };
+      });
+
+      return {
+        tutor: {
+          id: tutor.id,
+          first_name: tutor.first_name,
+          middle_name: tutor.middle_name,
+          last_name: tutor.last_name,
+          email: tutor.email,
+        },
+        role: tutorAssignment.role,
+        course_levels: courseLevelGroups,
+      };
+    });
+
+    return result;
+  }
 }
 

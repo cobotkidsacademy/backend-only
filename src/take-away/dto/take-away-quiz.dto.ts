@@ -1,10 +1,10 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, IsBoolean, IsIn, IsUUID } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsBoolean, IsUUID, IsIn, IsArray, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 
 // ==================== Interfaces ====================
 
-export interface Quiz {
+export interface TakeAwayQuiz {
   id: string;
-  topic_id: string;
   title: string;
   description?: string;
   time_limit_minutes: number;
@@ -18,22 +18,10 @@ export interface Quiz {
   status: 'active' | 'inactive' | 'draft';
   created_at: string;
   updated_at: string;
-  topic?: {
-    id: string;
-    name: string;
-    level?: {
-      id: string;
-      name: string;
-      course?: {
-        id: string;
-        name: string;
-      };
-    };
-  };
-  questions?: QuizQuestion[];
+  questions?: TakeAwayQuizQuestion[];
 }
 
-export interface QuizQuestion {
+export interface TakeAwayQuizQuestion {
   id: string;
   quiz_id: string;
   question_text: string;
@@ -45,10 +33,10 @@ export interface QuizQuestion {
   status: 'active' | 'inactive';
   created_at: string;
   updated_at: string;
-  options?: QuizOption[];
+  options?: TakeAwayQuizOption[];
 }
 
-export interface QuizOption {
+export interface TakeAwayQuizOption {
   id: string;
   question_id: string;
   option_text: string;
@@ -58,7 +46,7 @@ export interface QuizOption {
   updated_at: string;
 }
 
-export interface StudentQuizAttempt {
+export interface TakeAwayQuizAttempt {
   id: string;
   student_id: string;
   quiz_id: string;
@@ -78,11 +66,11 @@ export interface StudentQuizAttempt {
     last_name: string;
     username: string;
   };
-  quiz?: Quiz;
-  answers?: StudentQuizAnswer[];
+  quiz?: TakeAwayQuiz;
+  answers?: TakeAwayQuizAnswer[];
 }
 
-export interface StudentQuizAnswer {
+export interface TakeAwayQuizAnswer {
   id: string;
   attempt_id: string;
   question_id: string;
@@ -90,49 +78,13 @@ export interface StudentQuizAnswer {
   is_correct: boolean;
   points_earned: number;
   answered_at: string;
-  question?: QuizQuestion;
-  selected_option?: QuizOption;
-}
-
-export interface StudentQuizBestScore {
-  id: string;
-  student_id: string;
-  quiz_id: string;
-  best_score: number;
-  best_percentage: number;
-  attempts_count: number;
-  first_attempt_at: string;
-  last_attempt_at: string;
-  created_at: string;
-  updated_at: string;
-  quiz?: Quiz;
-}
-
-export interface StudentTotalPoints {
-  id: string;
-  student_id: string;
-  total_points: number;
-  quizzes_completed: number;
-  quizzes_passed: number;
-  average_score: number;
-  last_quiz_at?: string;
-  created_at: string;
-  updated_at: string;
-  student?: {
-    id: string;
-    first_name: string;
-    last_name: string;
-    username: string;
-  };
+  question?: TakeAwayQuizQuestion;
+  selected_option?: TakeAwayQuizOption;
 }
 
 // ==================== DTOs ====================
 
-export class CreateQuizDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Topic ID is required' })
-  topic_id: string;
-
+export class CreateTakeAwayQuizDto {
   @IsString()
   @IsNotEmpty({ message: 'Title is required' })
   title: string;
@@ -167,24 +119,51 @@ export class CreateQuizDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['active', 'inactive', 'draft'], { message: 'Status must be active, inactive, or draft' })
+  @IsIn(['active', 'inactive', 'draft'])
   status?: 'active' | 'inactive' | 'draft';
 }
 
-export class UpdateQuizDto {
-  title?: string;
-  description?: string;
-  time_limit_minutes?: number;
-  passing_score?: number;
-  shuffle_questions?: boolean;
-  shuffle_options?: boolean;
-  show_correct_answers?: boolean;
-  allow_retake?: boolean;
-  status?: 'active' | 'inactive' | 'draft';
-}
-
-export class CreateQuestionDto {
+export class UpdateTakeAwayQuizDto {
+  @IsOptional()
   @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsNumber()
+  time_limit_minutes?: number;
+
+  @IsOptional()
+  @IsNumber()
+  passing_score?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  shuffle_questions?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  shuffle_options?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  show_correct_answers?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allow_retake?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['active', 'inactive', 'draft'])
+  status?: 'active' | 'inactive' | 'draft';
+}
+
+export class CreateTakeAwayQuizQuestionDto {
+  @IsUUID()
   @IsNotEmpty({ message: 'Quiz ID is required' })
   quiz_id: string;
 
@@ -194,7 +173,7 @@ export class CreateQuestionDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['multiple_choice', 'true_false', 'multi_select'], { message: 'Question type must be multiple_choice, true_false, or multi_select' })
+  @IsIn(['multiple_choice', 'true_false', 'multi_select'])
   question_type?: 'multiple_choice' | 'true_false' | 'multi_select';
 
   @IsOptional()
@@ -214,20 +193,44 @@ export class CreateQuestionDto {
   image_url?: string;
 
   @IsOptional()
-  options?: CreateOptionDto[];
-}
-
-export class UpdateQuestionDto {
-  question_text?: string;
-  question_type?: 'multiple_choice' | 'true_false' | 'multi_select';
-  points?: number;
-  order_position?: number;
-  explanation?: string;
-  image_url?: string;
+  @IsString()
+  @IsIn(['active', 'inactive'])
   status?: 'active' | 'inactive';
 }
 
-export class CreateOptionDto {
+export class UpdateTakeAwayQuizQuestionDto {
+  @IsOptional()
+  @IsString()
+  question_text?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['multiple_choice', 'true_false', 'multi_select'])
+  question_type?: 'multiple_choice' | 'true_false' | 'multi_select';
+
+  @IsOptional()
+  @IsNumber()
+  points?: number;
+
+  @IsOptional()
+  @IsNumber()
+  order_position?: number;
+
+  @IsOptional()
+  @IsString()
+  explanation?: string;
+
+  @IsOptional()
+  @IsString()
+  image_url?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['active', 'inactive'])
+  status?: 'active' | 'inactive';
+}
+
+export class CreateTakeAwayQuizOptionDto {
   @IsUUID()
   @IsNotEmpty({ message: 'Question ID is required' })
   question_id: string;
@@ -244,105 +247,52 @@ export class CreateOptionDto {
   order_position?: number;
 }
 
-export class UpdateOptionDto {
+export class UpdateTakeAwayQuizOptionDto {
+  @IsOptional()
+  @IsString()
   option_text?: string;
+
+  @IsOptional()
+  @IsBoolean()
   is_correct?: boolean;
+
+  @IsOptional()
+  @IsNumber()
   order_position?: number;
 }
 
-export class StartAttemptDto {
+export class StartTakeAwayQuizAttemptDto {
   @IsOptional()
-  @IsString()
+  @IsUUID()
   student_id?: string; // Will be set from JWT token if not provided
-  @IsString()
+
+  @IsUUID()
   @IsNotEmpty()
   quiz_id: string;
 }
 
-export class SubmitAnswerDto {
-  attempt_id: string;
-  question_id: string;
-  selected_option_id: string;
-}
-
-export class CompleteAttemptDto {
-  attempt_id: string;
-  time_spent_seconds: number;
-}
-
-export class SubmitQuizDto {
-  @IsString()
+export class SubmitTakeAwayQuizAttemptDto {
+  @IsUUID()
   @IsNotEmpty({ message: 'Attempt ID is required' })
   attempt_id: string;
 
+  @IsArray()
   @IsNotEmpty({ message: 'Answers are required' })
-  answers: {
-    question_id: string;
-    selected_option_id: string;
-  }[];
+  @ValidateNested({ each: true })
+  @Type(() => TakeAwayQuizAnswerDto)
+  answers: TakeAwayQuizAnswerDto[];
 
   @IsNumber()
   @IsNotEmpty({ message: 'Time spent is required' })
   time_spent_seconds: number;
 }
 
-// ==================== Response Types ====================
+export class TakeAwayQuizAnswerDto {
+  @IsUUID()
+  @IsNotEmpty()
+  question_id: string;
 
-export interface QuizWithDetails extends Quiz {
-  topic: {
-    id: string;
-    name: string;
-    level: {
-      id: string;
-      name: string;
-      course: {
-        id: string;
-        name: string;
-      };
-    };
-  };
-  questions: QuizQuestion[];
+  @IsOptional()
+  @IsUUID()
+  selected_option_id?: string;
 }
-
-export interface AttemptResult {
-  attempt: StudentQuizAttempt;
-  correct_answers: number;
-  total_questions: number;
-  score: number;
-  max_score: number;
-  percentage: number;
-  passed: boolean;
-  is_new_high_score: boolean;
-  points_earned: number;
-  total_points: number;
-  answers: {
-    question: QuizQuestion;
-    selected_option?: QuizOption;
-    correct_option: QuizOption;
-    is_correct: boolean;
-    points_earned: number;
-  }[];
-}
-
-export interface LeaderboardEntry {
-  rank: number;
-  student: {
-    id: string;
-    first_name: string;
-    last_name: string;
-    username: string;
-  };
-  total_points: number;
-  quizzes_completed: number;
-  quizzes_passed: number;
-  average_score: number;
-}
-
-export interface StudentQuizProgress {
-  quiz: Quiz;
-  best_score?: StudentQuizBestScore;
-  last_attempt?: StudentQuizAttempt;
-  can_retake: boolean;
-  status: 'not_started' | 'in_progress' | 'completed' | 'passed';
-}
-

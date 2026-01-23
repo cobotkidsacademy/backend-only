@@ -19,6 +19,7 @@ import { EditorModule } from './editor/editor.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { BugsModule } from './bugs/bugs.module';
 import { FormsModule } from './forms/forms.module';
+import { TakeAwayModule } from './take-away/take-away.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { FormsModule } from './forms/forms.module';
     AttendanceModule,
     BugsModule,
     FormsModule,
+    TakeAwayModule,
   ],
   controllers: [AppController],
   providers: [AppService, KeepAliveService],
