@@ -145,21 +145,79 @@ export class QuizService {
   }
 
   async updateQuiz(quizId: string, dto: UpdateQuizDto): Promise<Quiz> {
+    console.log(`[QuizService] Updating quiz ${quizId} with data:`, JSON.stringify(dto, null, 2));
+    
+    const updateData: any = {
+      updated_at: new Date().toISOString(),
+    };
+    
+    // Only include fields that are provided in the DTO (check for null/undefined explicitly)
+    if (dto.title !== undefined && dto.title !== null) updateData.title = dto.title;
+    if (dto.description !== undefined && dto.description !== null) updateData.description = dto.description;
+    if (dto.time_limit_minutes !== undefined && dto.time_limit_minutes !== null) updateData.time_limit_minutes = dto.time_limit_minutes;
+    if (dto.passing_score !== undefined && dto.passing_score !== null) updateData.passing_score = dto.passing_score;
+    if (dto.shuffle_questions !== undefined && dto.shuffle_questions !== null) updateData.shuffle_questions = dto.shuffle_questions;
+    if (dto.shuffle_options !== undefined && dto.shuffle_options !== null) updateData.shuffle_options = dto.shuffle_options;
+    if (dto.show_correct_answers !== undefined && dto.show_correct_answers !== null) updateData.show_correct_answers = dto.show_correct_answers;
+    if (dto.allow_retake !== undefined && dto.allow_retake !== null) updateData.allow_retake = dto.allow_retake;
+    // Status can be explicitly set to any valid value, including empty string should be treated as undefined
+    if (dto.status !== undefined && dto.status !== null && dto.status !== '') {
+      updateData.status = dto.status;
+      console.log(`[QuizService] Status will be updated to: ${dto.status}`);
+    } else {
+      console.log(`[QuizService] Status not provided or empty, skipping status update`);
+    }
+    
+    console.log(`[QuizService] Update payload:`, JSON.stringify(updateData, null, 2));
+    
+    // Verify we have at least one field to update (besides updated_at)
+    const fieldsToUpdate = Object.keys(updateData).filter(key => key !== 'updated_at');
+    if (fieldsToUpdate.length === 0) {
+      console.warn(`[QuizService] No fields to update for quiz ${quizId}`);
+      // Return the current quiz data
+      return this.getQuizById(quizId);
+    }
+    
     const { data, error } = await this.supabase
       .from('quizzes')
-      .update({
-        ...dto,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updateData)
       .eq('id', quizId)
       .select()
       .single();
 
     if (error) {
-      throw new BadRequestException(error.message);
+      console.error(`[QuizService] Error updating quiz ${quizId}:`, error);
+      console.error(`[QuizService] Error details:`, JSON.stringify(error, null, 2));
+      throw new BadRequestException(error.message || 'Failed to update quiz');
     }
 
-    return data;
+    if (!data) {
+      console.error(`[QuizService] Update succeeded but no data returned for quiz ${quizId}`);
+      throw new BadRequestException('Quiz update succeeded but no data returned');
+    }
+
+    console.log(`[QuizService] Quiz ${quizId} updated successfully:`, JSON.stringify(data, null, 2));
+    console.log(`[QuizService] Updated status: ${data.status}`);
+    
+    // Verify the update by querying the database again
+    const { data: verifyData, error: verifyError } = await this.supabase
+      .from('quizzes')
+      .select('id, status, updated_at')
+      .eq('id', quizId)
+      .single();
+    
+    if (verifyError) {
+      console.error(`[QuizService] Error verifying update for quiz ${quizId}:`, verifyError);
+    } else {
+      console.log(`[QuizService] Verified quiz ${quizId} status in database:`, verifyData?.status);
+      if (updateData.status && verifyData?.status !== updateData.status) {
+        console.error(`[QuizService] WARNING: Status mismatch! Expected ${updateData.status}, got ${verifyData?.status}`);
+      }
+    }
+    
+    // Return the full quiz with questions by calling getQuizById
+    // This ensures the frontend gets all the quiz data including questions
+    return this.getQuizById(quizId);
   }
 
   async deleteQuiz(quizId: string): Promise<void> {
@@ -768,51 +826,21 @@ export class QuizService {
   }
 
   async getStudentTotalPoints(studentId: string): Promise<StudentTotalPoints | null> {
-    console.log('=== getStudentTotalPoints DEBUG ===');
-    console.log('Student ID:', studentId);
-    console.log('Student ID type:', typeof studentId);
-    
-    // First, let's check if student exists
-    const { data: studentCheck } = await this.supabase
-      .from('students')
-      .select('id, username')
-      .eq('id', studentId)
-      .maybeSingle();
-    console.log('Student exists check:', studentCheck);
-    
-    // Query all points records to see what's in the database
-    const { data: allPoints } = await this.supabase
-      .from('student_total_points')
-      .select('*')
-      .limit(10);
-    console.log('All points records in DB (first 10):', allPoints);
-    
-    // Now query for this specific student
+    // Direct query for student points (optimized - no debug queries)
     const { data, error } = await this.supabase
       .from('student_total_points')
-      .select(`
-        *,
-        student:students(id, first_name, last_name, username)
-      `)
+      .select('*')
       .eq('student_id', studentId)
       .maybeSingle();
-
-    console.log('Query result - data:', JSON.stringify(data, null, 2));
-    console.log('Query result - error:', error);
-    console.log('Error code:', error?.code);
-    console.log('Error message:', error?.message);
 
     // If no record exists, return a default record with 0 points
     if (error && error.code !== 'PGRST116') {
       // PGRST116 means no rows found, which is fine
-      console.error('Error fetching student total points:', error);
       throw new BadRequestException(`Failed to fetch student points: ${error.message}`);
     }
 
     // If no record exists, return default values
     if (!data) {
-      console.log('⚠️ No points record found for student_id:', studentId);
-      console.log('Returning default values with 0 points');
       return {
         id: '',
         student_id: studentId,
@@ -826,9 +854,6 @@ export class QuizService {
       };
     }
 
-    console.log('✅ Returning points data:', data);
-    console.log('✅ Total points:', data.total_points);
-    console.log('✅ Student ID in record:', data.student_id);
     return data;
   }
 

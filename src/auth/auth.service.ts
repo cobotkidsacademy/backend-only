@@ -254,7 +254,7 @@ export class AuthService {
   }
 
   async getStudentInfo(studentId: string) {
-    // Get student basic info
+    // Get student basic info first (needed for class_id)
     const { data: student, error: studentError } = await this.supabase
       .from('students')
       .select(`
@@ -283,55 +283,63 @@ export class AuthService {
       throw new UnauthorizedException('Student not found');
     }
 
-    // Get tutors assigned to the student's class
-    const { data: tutorAssignments } = await this.supabase
-      .from('tutor_class_assignments')
-      .select(`
-        id,
-        role,
-        tutor:tutors(
+    // Run all independent queries in parallel for better performance
+    const [tutorAssignmentsResult, courseLevelAssignmentsResult, studentPointsResult, bestScoresResult] = await Promise.all([
+      // Get tutors assigned to the student's class
+      this.supabase
+        .from('tutor_class_assignments')
+        .select(`
           id,
-          first_name,
-          middle_name,
-          last_name,
-          email,
-          phone
-        )
-      `)
-      .eq('class_id', student.class_id)
-      .eq('status', 'active');
-
-    // Get course level assignments for the student's class
-    const { data: courseLevelAssignments } = await this.supabase
-      .from('class_course_level_assignments')
-      .select(`
-        id,
-        course_level_id,
-        enrollment_status,
-        course_level:course_levels(
+          role,
+          tutor:tutors(
+            id,
+            first_name,
+            middle_name,
+            last_name,
+            email,
+            phone
+          )
+        `)
+        .eq('class_id', student.class_id)
+        .eq('status', 'active'),
+      
+      // Get course level assignments for the student's class
+      this.supabase
+        .from('class_course_level_assignments')
+        .select(`
           id,
-          name,
-          level_number,
-          course:courses(id, name, code)
-        )
-      `)
-      .eq('class_id', student.class_id)
-      .order('created_at', { ascending: false });
+          course_level_id,
+          enrollment_status,
+          course_level:course_levels(
+            id,
+            name,
+            level_number,
+            course:courses(id, name, code)
+          )
+        `)
+        .eq('class_id', student.class_id)
+        .order('created_at', { ascending: false }),
+      
+      // Get student quiz performance (score category)
+      this.supabase
+        .from('student_total_points')
+        .select('total_points, quizzes_completed')
+        .eq('student_id', studentId)
+        .maybeSingle(),
+      
+      // Get highest quiz percentage to determine performance category
+      this.supabase
+        .from('student_quiz_best_scores')
+        .select('best_percentage')
+        .eq('student_id', studentId)
+        .order('best_percentage', { ascending: false })
+        .limit(1),
+    ]);
 
-    // Get student quiz performance (score category)
-    const { data: studentPoints } = await this.supabase
-      .from('student_total_points')
-      .select('total_points, quizzes_completed')
-      .eq('student_id', studentId)
-      .maybeSingle();
-
-    // Get highest quiz percentage to determine performance category
-    const { data: bestScores } = await this.supabase
-      .from('student_quiz_best_scores')
-      .select('best_percentage')
-      .eq('student_id', studentId)
-      .order('best_percentage', { ascending: false })
-      .limit(1);
+    const tutorAssignments = tutorAssignmentsResult.data;
+    const courseLevelAssignments = courseLevelAssignmentsResult.data;
+    const studentPoints = studentPointsResult.data;
+    const bestScores = bestScoresResult.data;
 
     // Determine performance category based on highest percentage
     let performanceCategory = 'below_expectation';
@@ -373,18 +381,6 @@ export class AuthService {
         course_name: course.name,
         enrollment_status: assignment.enrollment_status,
       };
-    });
-
-    console.log('=== getStudentInfo Response ===');
-    console.log('Student ID:', studentId);
-    console.log('Student data:', student);
-    console.log('Tutors:', tutors);
-    console.log('Course levels:', courseLevels);
-    console.log('Performance:', {
-      category: performanceCategory,
-      total_points: studentPoints?.total_points || 0,
-      quizzes_completed: studentPoints?.quizzes_completed || 0,
-      highest_percentage: bestScores && bestScores.length > 0 ? bestScores[0].best_percentage : 0,
     });
 
     return {

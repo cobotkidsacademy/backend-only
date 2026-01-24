@@ -98,15 +98,7 @@ export class QuizController {
   @UseGuards(JwtAuthGuard)
   @Get('student-points')
   async getStudentTotalPoints(@Request() req) {
-    console.log('=== GET /quizzes/student-points ===');
-    console.log('Request user:', req.user);
-    console.log('Student ID from token:', req.user.sub);
-    console.log('Student ID type:', typeof req.user.sub);
-    
     const result = await this.quizService.getStudentTotalPoints(req.user.sub);
-    
-    console.log('Service result:', result);
-    console.log('Returning to client:', result);
     
     // Always return an object with total_points, even if null
     return result || {

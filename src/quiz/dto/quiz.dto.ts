@@ -172,14 +172,41 @@ export class CreateQuizDto {
 }
 
 export class UpdateQuizDto {
+  @IsOptional()
+  @IsString()
   title?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsNumber()
   time_limit_minutes?: number;
+
+  @IsOptional()
+  @IsNumber()
   passing_score?: number;
+
+  @IsOptional()
+  @IsBoolean()
   shuffle_questions?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   shuffle_options?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   show_correct_answers?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   allow_retake?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['active', 'inactive', 'draft'])
   status?: 'active' | 'inactive' | 'draft';
 }
 

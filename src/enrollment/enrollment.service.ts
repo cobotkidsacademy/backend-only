@@ -62,6 +62,8 @@ export class EnrollmentService {
   }
 
   async getAllCoursesWithEnrollmentStatus(studentId: string) {
+    this.logger.debug(`Fetching courses with enrollment status for student: ${studentId}`);
+    
     // Get all courses
     const { data: courses, error: coursesError } = await this.supabase
       .from('courses')
@@ -72,6 +74,8 @@ export class EnrollmentService {
       this.logger.error('Error fetching courses:', coursesError);
       throw new NotFoundException('Failed to fetch courses');
     }
+
+    this.logger.debug(`Found ${courses?.length || 0} active courses`);
 
     // Get student enrollments
     const { data: enrollments, error: enrollmentsError } = await this.supabase
@@ -84,20 +88,40 @@ export class EnrollmentService {
       throw new NotFoundException('Failed to fetch enrollments');
     }
 
+    this.logger.debug(`Found ${enrollments?.length || 0} enrollments for student ${studentId}`);
+    if (enrollments && enrollments.length > 0) {
+      this.logger.debug('Enrollment details:', JSON.stringify(enrollments, null, 2));
+    }
+
     // Create a map of course_id -> enrollment
     const enrollmentMap = new Map(
       (enrollments || []).map((e) => [e.course_id, e])
     );
 
     // Merge courses with enrollment status
-    return (courses || []).map((course) => {
+    const result = (courses || []).map((course) => {
       const enrollment = enrollmentMap.get(course.id);
+      const status = enrollment?.enrollment_status || 'not_enrolled';
       return {
         ...course,
-        enrollment_status: enrollment?.enrollment_status || 'not_enrolled',
+        enrollment_status: status,
         progress_percentage: enrollment?.progress_percentage || 0,
       };
     });
+
+    const enrolledCount = result.filter(c => c.enrollment_status === 'enrolled').length;
+    const completedCount = result.filter(c => c.enrollment_status === 'completed').length;
+    const notEnrolledCount = result.filter(c => c.enrollment_status === 'not_enrolled').length;
+    
+    this.logger.debug(`Result: ${enrolledCount} enrolled, ${completedCount} completed, ${notEnrolledCount} not enrolled, ${result.length} total courses`);
+    
+    // Log details of enrolled courses for debugging
+    if (enrolledCount > 0) {
+      const enrolledCourses = result.filter(c => c.enrollment_status === 'enrolled');
+      this.logger.debug('Enrolled courses:', JSON.stringify(enrolledCourses.map(c => ({ id: c.id, name: c.name, status: c.enrollment_status })), null, 2));
+    }
+
+    return result;
   }
 
   async updateEnrollmentStatus(
