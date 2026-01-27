@@ -419,4 +419,62 @@ export class StudentCoursesService {
       title: topic.name,
     }));
   }
+
+  async recordEditorAccess(
+    studentId: string,
+    username: string,
+    courseId: string,
+    topicId: string,
+    editorType: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Verify student exists and matches username
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id, username')
+      .eq('id', studentId)
+      .eq('username', username)
+      .single();
+
+    if (studentError || !student) {
+      throw new NotFoundException('Student not found or username mismatch');
+    }
+
+    // Verify course exists
+    const { data: course, error: courseError } = await this.supabase
+      .from('courses')
+      .select('id')
+      .eq('id', courseId)
+      .single();
+
+    if (courseError || !course) {
+      throw new NotFoundException('Course not found');
+    }
+
+    // Verify topic exists
+    const { data: topic, error: topicError } = await this.supabase
+      .from('topics')
+      .select('id')
+      .eq('id', topicId)
+      .single();
+
+    if (topicError || !topic) {
+      throw new NotFoundException('Topic not found');
+    }
+
+    // Log the editor access (you can create a table for this or use existing logging mechanism)
+    // For now, we'll just return success - you can extend this to store in a database table
+    console.log('Editor access recorded:', {
+      studentId,
+      username,
+      courseId,
+      topicId,
+      editorType,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: 'Editor access recorded successfully',
+    };
+  }
 }

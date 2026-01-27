@@ -13,3 +13,4 @@ CREATE TABLE IF NOT EXISTS class_forms (
 
 CREATE INDEX IF NOT EXISTS idx_class_forms_status ON class_forms(status);
 
+

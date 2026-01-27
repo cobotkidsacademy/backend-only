@@ -20,6 +20,7 @@ import {
 import { Response } from 'express';
 import { CurriculumService } from './curriculum.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AssignCourseEditorDto } from '../allocation/dto/allocation.dto';
 
 @Controller('curriculum')
 export class CurriculumController {
@@ -327,7 +328,7 @@ export class CurriculumController {
 
   @Post('course-editors')
   @UseGuards(JwtAuthGuard)
-  async createOrUpdateCourseEditor(@Body() dto: any) {
+  async createOrUpdateCourseEditor(@Body() dto: AssignCourseEditorDto) {
     return this.curriculumService.createOrUpdateCourseEditor(dto);
   }
 

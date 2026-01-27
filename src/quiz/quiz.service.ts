@@ -160,12 +160,12 @@ export class QuizService {
     if (dto.shuffle_options !== undefined && dto.shuffle_options !== null) updateData.shuffle_options = dto.shuffle_options;
     if (dto.show_correct_answers !== undefined && dto.show_correct_answers !== null) updateData.show_correct_answers = dto.show_correct_answers;
     if (dto.allow_retake !== undefined && dto.allow_retake !== null) updateData.allow_retake = dto.allow_retake;
-    // Status can be explicitly set to any valid value, including empty string should be treated as undefined
-    if (dto.status !== undefined && dto.status !== null && dto.status !== '') {
+    // Status can be explicitly set to any valid value
+    if (dto.status !== undefined && dto.status !== null) {
       updateData.status = dto.status;
       console.log(`[QuizService] Status will be updated to: ${dto.status}`);
     } else {
-      console.log(`[QuizService] Status not provided or empty, skipping status update`);
+      console.log(`[QuizService] Status not provided, skipping status update`);
     }
     
     console.log(`[QuizService] Update payload:`, JSON.stringify(updateData, null, 2));

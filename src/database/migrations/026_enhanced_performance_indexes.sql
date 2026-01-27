@@ -265,3 +265,4 @@ END $$;
 --   ANALYZE enrollments;
 --   ANALYZE lessons;
 --   ANALYZE assignments;
+

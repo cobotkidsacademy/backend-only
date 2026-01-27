@@ -15,6 +15,7 @@ import {
   BorderStyle,
   UnderlineType,
 } from 'docx';
+import { AssignCourseEditorDto } from '../allocation/dto/allocation.dto';
 
 @Injectable()
 export class CurriculumService {
@@ -495,7 +496,7 @@ export class CurriculumService {
 
   // ============ COURSE EDITOR ASSIGNMENT METHODS ============
 
-  async createOrUpdateCourseEditor(dto: any) {
+  async createOrUpdateCourseEditor(dto: AssignCourseEditorDto) {
     // Check if assignment exists
     const { data: existing } = await this.supabase
       .from('course_editor_assignments')

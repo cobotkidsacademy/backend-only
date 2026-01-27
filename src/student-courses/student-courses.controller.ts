@@ -50,4 +50,19 @@ export class StudentCoursesController {
   async getTopicNotes(@Param('topicId') topicId: string) {
     return this.studentCoursesService.getTopicNotes(topicId);
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('record-editor-access')
+  async recordEditorAccess(
+    @Request() req,
+    @Body() body: { username: string; course_id: string; topic_id: string; editor_type: string },
+  ) {
+    return this.studentCoursesService.recordEditorAccess(
+      req.user.sub,
+      body.username,
+      body.course_id,
+      body.topic_id,
+      body.editor_type,
+    );
+  }
 }
