@@ -9,6 +9,7 @@ import {
 import { getCorsConfig } from './config/cors.config';
 import { ResponseCompressInterceptor } from './core/interceptors/response-compress.interceptor';
 import { PerformanceInterceptor } from './core/interceptors/performance.interceptor';
+import * as express from 'express';
 // Compression middleware (install: npm install compression @types/compression)
 // For now, using conditional import to avoid breaking if not installed
 let compression: any;
@@ -22,7 +23,16 @@ async function bootstrap() {
   // Set timezone to Africa/Nairobi for all date operations
   process.env.TZ = 'Africa/Nairobi';
   
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: true, // Enable body parser
+  });
+
+  // Increase body parser limit to handle large .sb3 files (base64 encoded)
+  // Default is 100kb, we need much more for Scratch projects
+  // 50MB should be enough for most projects (base64 increases size by ~33%)
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  console.log('✅ Body parser configured with 50MB limit for .sb3 file uploads');
 
   // Enable compression (gzip/brotli) for all responses
   // This significantly reduces bandwidth, critical for low-bandwidth scenarios

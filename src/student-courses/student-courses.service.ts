@@ -477,4 +477,550 @@ export class StudentCoursesService {
       message: 'Editor access recorded successfully',
     };
   }
+
+  async getStudentPortfolio(studentId: string): Promise<any[]> {
+    // Get all student saved projects (from student_saved_projects table)
+    const { data: savedProjects, error: savedProjectsError } = await this.supabase
+      .from('student_saved_projects')
+      .select(`
+        id,
+        project_name,
+        project_title,
+        topic_id,
+        course_level_id,
+        course_id,
+        editor_type,
+        editor_url,
+        project_type,
+        updated_at,
+        created_at,
+        last_accessed_at,
+        topic:topics(
+          id,
+          name
+        ),
+        course_level:course_levels(
+          id,
+          name
+        ),
+        course:courses(
+          id,
+          name
+        )
+      `)
+      .eq('student_id', studentId)
+      .eq('is_current', true)
+      .order('updated_at', { ascending: false });
+
+    if (savedProjectsError) {
+      throw new BadRequestException(`Failed to fetch saved projects: ${savedProjectsError.message}`);
+    }
+
+    // Also get project submissions for backward compatibility
+    const { data: submissions, error: submissionsError } = await this.supabase
+      .from('student_project_submissions')
+      .select(`
+        id,
+        project_id,
+        submitted_at,
+        updated_at,
+        project:projects(
+          id,
+          title,
+          topic_id,
+          topic:topics(
+            id,
+            name,
+            level_id,
+            course_level:course_levels(
+              id,
+              name,
+              course_id,
+              course:courses(
+                id,
+                name
+              )
+            )
+          )
+        )
+      `)
+      .eq('student_id', studentId)
+      .order('updated_at', { ascending: false });
+
+    if (submissionsError) {
+      console.error('Error fetching project submissions:', submissionsError);
+      // Don't throw, just log - we can still return saved projects
+    }
+
+    const portfolioItems: any[] = [];
+
+    // Add saved projects
+    if (savedProjects && savedProjects.length > 0) {
+      savedProjects.forEach((savedProject: any) => {
+        const topic = Array.isArray(savedProject.topic) ? savedProject.topic[0] : savedProject.topic;
+        const courseLevel = Array.isArray(savedProject.course_level) ? savedProject.course_level[0] : savedProject.course_level;
+        const course = Array.isArray(savedProject.course) ? savedProject.course[0] : savedProject.course;
+
+        portfolioItems.push({
+          id: savedProject.id,
+          project_id: savedProject.id, // Use saved project ID
+          topic_id: savedProject.topic_id,
+          topic_name: topic?.name || savedProject.project_name,
+          course_level_id: savedProject.course_level_id,
+          course_level_name: courseLevel?.name || 'Unknown Level',
+          course_id: savedProject.course_id,
+          course_name: course?.name || 'Unknown Course',
+          project_title: savedProject.project_title || savedProject.project_name,
+          editor_type: savedProject.editor_type || 'inter',
+          editor_url: savedProject.editor_url || '',
+          project_type: savedProject.project_type,
+          saved_at: savedProject.created_at,
+          updated_at: savedProject.updated_at,
+          is_saved_project: true, // Flag to identify saved projects vs submissions
+        });
+      });
+    }
+
+    // Add project submissions (for backward compatibility)
+    if (submissions && submissions.length > 0) {
+      submissions
+        .filter((submission: any) => submission.project && submission.project.topic)
+        .forEach((submission: any) => {
+          const project = submission.project;
+          const topic = project.topic;
+          const courseLevel = topic.course_level;
+          const course = courseLevel?.course;
+
+          portfolioItems.push({
+            id: submission.id,
+            project_id: project.id,
+            topic_id: topic.id,
+            topic_name: topic.name,
+            course_level_id: courseLevel?.id || '',
+            course_level_name: courseLevel?.name || 'Unknown Level',
+            course_id: course?.id || '',
+            course_name: course?.name || 'Unknown Course',
+            project_title: project.title,
+            editor_type: 'inter' as 'inter' | 'exter',
+            editor_url: '',
+            saved_at: submission.submitted_at,
+            updated_at: submission.updated_at,
+            is_saved_project: false, // Flag to identify saved projects vs submissions
+          });
+        });
+    }
+
+    // Fetch editor info for topics that don't have it
+    const topicIds = [...new Set(portfolioItems.map((item: any) => item.topic_id))];
+    if (topicIds.length > 0) {
+      const { data: topics, error: topicsError } = await this.supabase
+        .from('topics')
+        .select('id, editor_type, editor_url')
+        .in('id', topicIds);
+
+      if (!topicsError && topics) {
+        const topicMap = new Map(topics.map((t: any) => [t.id, t]));
+        portfolioItems.forEach((item: any) => {
+          if (!item.editor_url || !item.editor_type) {
+            const topic = topicMap.get(item.topic_id);
+            if (topic) {
+              item.editor_type = item.editor_type || topic.editor_type || 'inter';
+              item.editor_url = item.editor_url || topic.editor_url || '';
+            }
+          }
+        });
+      }
+    }
+
+    return portfolioItems;
+  }
+
+  async saveStudentProject(
+    studentId: string,
+    projectData: {
+      project_id?: string; // Optional: ID of existing project to update
+      topic_id: string;
+      course_level_id: string;
+      course_id: string;
+      project_name: string;
+      project_title?: string;
+      editor_type: 'inter' | 'exter';
+      editor_url?: string;
+      project_data?: any;
+      project_html?: string;
+      project_code?: string;
+      project_files?: any[];
+      project_type?: string;
+      file_format?: string;
+      is_autosaved?: boolean;
+    },
+  ): Promise<any> {
+    console.log('Saving project:', {
+      studentId,
+      projectId: projectData.project_id,
+      topicId: projectData.topic_id,
+      courseId: projectData.course_id,
+      levelId: projectData.course_level_id,
+      projectName: projectData.project_name,
+      hasProjectData: !!projectData.project_data,
+      projectDataType: typeof projectData.project_data,
+      projectDataKeys: projectData.project_data ? Object.keys(projectData.project_data) : [],
+      sb3Base64Length: projectData.project_data?.sb3Base64 ? projectData.project_data.sb3Base64.length : 0,
+    });
+
+    // Verify student exists
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id')
+      .eq('id', studentId)
+      .single();
+
+    if (studentError || !student) {
+      console.error('Student lookup error:', studentError);
+      throw new NotFoundException(`Student not found: ${studentId}`);
+    }
+
+    // Verify topic exists - try without .single() first to see if it exists
+    const { data: topics, error: topicError } = await this.supabase
+      .from('topics')
+      .select('id, name, status')
+      .eq('id', projectData.topic_id);
+
+    if (topicError) {
+      console.error('Topic lookup error:', topicError);
+      throw new NotFoundException(`Topic lookup failed: ${topicError.message}`);
+    }
+    
+    if (!topics || topics.length === 0) {
+      console.error(`Topic not found with ID: ${projectData.topic_id}`);
+      // Try to find similar topics for debugging
+      const { data: allTopics } = await this.supabase
+        .from('topics')
+        .select('id, name')
+        .limit(5);
+      console.log('Sample topics in database:', allTopics);
+      throw new NotFoundException(`Topic not found with ID: ${projectData.topic_id}`);
+    }
+    
+    const topic = topics[0];
+    
+    // Check if topic is active
+    if (topic.status && topic.status !== 'active') {
+      console.warn(`Topic ${projectData.topic_id} is not active (status: ${topic.status})`);
+    }
+
+    // Calculate file size
+    let fileSizeBytes = 0;
+    if (projectData.project_data) {
+      fileSizeBytes += JSON.stringify(projectData.project_data).length;
+    }
+    if (projectData.project_html) {
+      fileSizeBytes += projectData.project_html.length;
+    }
+    if (projectData.project_code) {
+      fileSizeBytes += projectData.project_code.length;
+    }
+    if (projectData.project_files) {
+      fileSizeBytes += JSON.stringify(projectData.project_files).length;
+    }
+
+    // Define session threshold: 1 hour (3600000 ms)
+    // If project was accessed within 1 hour, update it; otherwise create new version
+    const SESSION_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+    const now = new Date();
+    let shouldUpdate = false;
+    let projectToUpdate = null;
+
+    // If project_id is provided, check if we should update it
+    if (projectData.project_id) {
+      const { data: existingProjectById, error: projectByIdError } = await this.supabase
+        .from('student_saved_projects')
+        .select('id, version, last_accessed_at, is_current, student_id, topic_id')
+        .eq('id', projectData.project_id)
+        .single();
+
+      if (!projectByIdError && existingProjectById) {
+        // Verify the project belongs to this student and topic
+        if (
+          existingProjectById.student_id === studentId &&
+          existingProjectById.topic_id === projectData.topic_id
+        ) {
+          const lastAccessed = new Date(existingProjectById.last_accessed_at);
+          const timeSinceLastAccess = now.getTime() - lastAccessed.getTime();
+
+          // If accessed recently (within session threshold), update it
+          if (timeSinceLastAccess < SESSION_THRESHOLD_MS && existingProjectById.is_current) {
+            shouldUpdate = true;
+            projectToUpdate = existingProjectById;
+          }
+        }
+      }
+    }
+
+    // If not updating by project_id, check for existing current project
+    if (!shouldUpdate) {
+      const { data: existingProject, error: existingError } = await this.supabase
+        .from('student_saved_projects')
+        .select('id, version, last_accessed_at')
+        .eq('student_id', studentId)
+        .eq('topic_id', projectData.topic_id)
+        .eq('is_current', true)
+        .single();
+
+      if (existingProject && !existingError) {
+        const lastAccessed = new Date(existingProject.last_accessed_at);
+        const timeSinceLastAccess = now.getTime() - lastAccessed.getTime();
+
+        // If accessed recently (within session threshold), update it
+        if (timeSinceLastAccess < SESSION_THRESHOLD_MS) {
+          shouldUpdate = true;
+          projectToUpdate = existingProject;
+        }
+      }
+    }
+
+    // If we should update, update the existing project
+    if (shouldUpdate && projectToUpdate) {
+      const { data: updatedProject, error: updateError } = await this.supabase
+        .from('student_saved_projects')
+        .update({
+          project_name: projectData.project_name,
+          project_title: projectData.project_title || projectData.project_name,
+          editor_type: projectData.editor_type || 'inter',
+          editor_url: projectData.editor_url || '',
+          project_data: projectData.project_data || null,
+          project_html: projectData.project_html || null,
+          project_code: projectData.project_code || null,
+          project_files: projectData.project_files ? JSON.stringify(projectData.project_files) : null,
+          project_type: projectData.project_type || 'scratch',
+          file_format: projectData.file_format || 'sb3', // Default to 'sb3' for Scratch projects
+          file_size_bytes: fileSizeBytes,
+          is_autosaved: projectData.is_autosaved || false,
+          last_accessed_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        })
+        .eq('id', projectToUpdate.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw new BadRequestException(`Failed to update project: ${updateError.message}`);
+      }
+
+      console.log('Updated existing project:', updatedProject.id);
+      return updatedProject;
+    }
+
+    // Otherwise, create a new version
+    // Mark old current version as not current if it exists
+    const { data: oldCurrentProject } = await this.supabase
+      .from('student_saved_projects')
+      .select('id, version')
+      .eq('student_id', studentId)
+      .eq('topic_id', projectData.topic_id)
+      .eq('is_current', true)
+      .maybeSingle();
+
+    let version = 1;
+    if (oldCurrentProject) {
+      // Mark old version as not current
+      await this.supabase
+        .from('student_saved_projects')
+        .update({ is_current: false })
+        .eq('id', oldCurrentProject.id);
+
+      version = (oldCurrentProject.version || 1) + 1;
+    }
+
+    // Insert new project version
+    const { data: savedProject, error: saveError } = await this.supabase
+      .from('student_saved_projects')
+      .insert({
+        student_id: studentId,
+        topic_id: projectData.topic_id,
+        course_level_id: projectData.course_level_id,
+        course_id: projectData.course_id,
+        project_name: projectData.project_name,
+        project_title: projectData.project_title || projectData.project_name,
+        editor_type: projectData.editor_type || 'inter',
+        editor_url: projectData.editor_url || '',
+        project_data: projectData.project_data || null,
+        project_html: projectData.project_html || null,
+        project_code: projectData.project_code || null,
+        project_files: projectData.project_files ? JSON.stringify(projectData.project_files) : null,
+        project_type: projectData.project_type || 'scratch',
+        file_format: projectData.file_format || 'sb3', // Default to 'sb3' for Scratch projects
+        file_size_bytes: fileSizeBytes,
+        is_autosaved: projectData.is_autosaved || false,
+        version: version,
+        is_current: true,
+        last_accessed_at: now.toISOString(),
+      })
+      .select()
+      .single();
+
+    if (saveError) {
+      throw new BadRequestException(`Failed to save project: ${saveError.message}`);
+    }
+
+    console.log('Created new project version:', savedProject.id, 'version:', version);
+    return savedProject;
+  }
+
+  async getStudentProject(studentId: string, projectId: string): Promise<any> {
+    console.log('Getting project:', { studentId, projectId });
+    
+    // Get project and verify it belongs to the student
+    const { data: projects, error: projectError } = await this.supabase
+      .from('student_saved_projects')
+      .select(`
+        *,
+        topic:topics(
+          id,
+          name
+        ),
+        course_level:course_levels(
+          id,
+          name
+        ),
+        course:courses(
+          id,
+          name
+        )
+      `)
+      .eq('id', projectId)
+      .eq('student_id', studentId);
+
+    if (projectError) {
+      console.error('Project lookup error:', projectError);
+      throw new NotFoundException(`Project lookup failed: ${projectError.message}`);
+    }
+
+    if (!projects || projects.length === 0) {
+      console.error(`Project not found: projectId=${projectId}, studentId=${studentId}`);
+      // Check if project exists but belongs to different student
+      const { data: otherProject } = await this.supabase
+        .from('student_saved_projects')
+        .select('id, student_id')
+        .eq('id', projectId)
+        .single();
+      
+      if (otherProject) {
+        throw new NotFoundException(`Project not found or access denied. Project exists but belongs to different student.`);
+      }
+      throw new NotFoundException(`Project not found with ID: ${projectId}`);
+    }
+
+    const project = projects[0];
+
+    // Update last_accessed_at
+    await this.supabase
+      .from('student_saved_projects')
+      .update({ last_accessed_at: new Date().toISOString() })
+      .eq('id', projectId);
+
+    // Parse project_files if it's a string
+    if (project.project_files && typeof project.project_files === 'string') {
+      try {
+        project.project_files = JSON.parse(project.project_files);
+      } catch (e) {
+        // If parsing fails, keep as is
+      }
+    }
+
+    // Parse project_data if it contains sb3Base64
+    if (project.project_data && typeof project.project_data === 'object') {
+      // project_data is already a JSON object, no need to parse
+      // But if it has sb3Base64, we keep it as is for the frontend
+    }
+
+    console.log('Project retrieved successfully:', {
+      id: project.id,
+      projectName: project.project_name,
+      hasProjectData: !!project.project_data,
+      projectType: project.project_type
+    });
+
+    return project;
+  }
+
+  async getStudentProjectSb3(
+    studentId: string,
+    projectId: string,
+  ): Promise<{ buffer: Buffer; filename: string }> {
+    const project = await this.getStudentProject(studentId, projectId);
+
+    const sb3Base64 = project?.project_data?.sb3Base64;
+    if (!sb3Base64 || typeof sb3Base64 !== 'string') {
+      throw new BadRequestException('Project does not contain sb3 data');
+    }
+
+    // Basic filename safety
+    const rawName = (project.project_title || project.project_name || 'project').toString();
+    const safeBase = rawName.replace(/[^a-zA-Z0-9 _.-]/g, '').trim() || 'project';
+    const filename = `${safeBase}.sb3`;
+
+    const buffer = Buffer.from(sb3Base64, 'base64');
+    return { buffer, filename };
+  }
+
+  async getStudentProjectsByTopic(studentId: string, topicId: string): Promise<any[]> {
+    // Get all projects for this student and topic (including old versions)
+    const { data: projects, error: projectsError } = await this.supabase
+      .from('student_saved_projects')
+      .select('*')
+      .eq('student_id', studentId)
+      .eq('topic_id', topicId)
+      .order('version', { ascending: false });
+
+    if (projectsError) {
+      throw new BadRequestException(`Failed to fetch projects: ${projectsError.message}`);
+    }
+
+    // Parse project_files for each project
+    return (projects || []).map((project: any) => {
+      if (project.project_files && typeof project.project_files === 'string') {
+        try {
+          project.project_files = JSON.parse(project.project_files);
+        } catch (e) {
+          // If parsing fails, keep as is
+        }
+      }
+      return project;
+    });
+  }
+
+  async getTopicDetails(topicId: string): Promise<any> {
+    const { data: topic, error: topicError } = await this.supabase
+      .from('topics')
+      .select(`
+        id,
+        name,
+        description,
+        level_id,
+        course_level:course_levels(
+          id,
+          name,
+          course_id,
+          course:courses(
+            id,
+            name
+          )
+        )
+      `)
+      .eq('id', topicId)
+      .single();
+
+    if (topicError || !topic) {
+      throw new NotFoundException('Topic not found');
+    }
+
+    return {
+      id: topic.id,
+      name: topic.name,
+      description: topic.description,
+      level_id: topic.level_id,
+      course_level: topic.course_level,
+    };
+  }
 }
