@@ -36,18 +36,21 @@
     "@nestjs/websockets": "^10.0.0",
     "@supabase/supabase-js": "^2.39.3",
     "@types/compression": "^1.8.1",
+    "acorn-import-phases": "^1.0.4",
     "axios": "^1.7.7",
     "bcrypt": "^5.1.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "compression": "^1.8.1",
     "docx": "^9.5.1",
+    "es-module-lexer": "^2.0.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
     "reflect-metadata": "^0.2.1",
     "rxjs": "^7.8.1",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "webpack": "^5.104.1"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.3.2",
