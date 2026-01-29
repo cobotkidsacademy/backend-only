@@ -36,6 +36,19 @@ export class StudentCoursesController {
     );
   }
 
+  /**
+   * Fast path: validate a class code without the client needing to know the course_level_id.
+   * This avoids the frontend making N sequential validate requests across levels.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('validate-code-any')
+  async validateClassCodeAny(
+    @Request() req,
+    @Body() body: { code: string },
+  ) {
+    return this.studentCoursesService.validateClassCodeAny(req.user.sub, body.code);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('level/:levelId/details')
   async getLevelDetails(@Request() req, @Param('levelId') levelId: string) {

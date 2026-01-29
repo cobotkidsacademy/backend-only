@@ -86,3 +86,4 @@ COMMENT ON COLUMN student_saved_projects.project_files IS 'JSONB array for proje
 COMMENT ON COLUMN student_saved_projects.is_current IS 'True for the latest version. Older versions can be kept for history.';
 COMMENT ON COLUMN student_saved_projects.version IS 'Version number for tracking project revisions';
 
+

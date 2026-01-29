@@ -56,3 +56,4 @@ CREATE TRIGGER update_bugs_updated_at
 
 
 
+

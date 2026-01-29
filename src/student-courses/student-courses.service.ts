@@ -11,6 +11,145 @@ import {
 export class StudentCoursesService {
   constructor(@Inject('SUPABASE_CLIENT') private supabase: SupabaseClient) {}
 
+  /**
+   * Validate class code without requiring the client to provide a course level.
+   * Returns the matched course_id/course_level_id/topic_id so the UI can navigate immediately.
+   */
+  async validateClassCodeAny(studentId: string, code: string): Promise<any> {
+    if (!code || typeof code !== 'string' || !/^\d{3}$/.test(code)) {
+      return { valid: false, message: 'Invalid code format' };
+    }
+
+    // Verify student exists and get class_id
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id, class_id')
+      .eq('id', studentId)
+      .single();
+
+    if (studentError || !student) {
+      throw new NotFoundException('Student not found');
+    }
+
+    const classId = student.class_id;
+
+    // Get current network time
+    const { data: timeData } = await this.supabase.rpc('get_current_timestamp');
+    const networkTime = timeData ? new Date(timeData) : new Date();
+
+    // Find the active code for this class
+    const { data: classCode, error: codeError } = await this.supabase
+      .from('class_codes')
+      .select(
+        `
+        *,
+        topic:topics(
+          id,
+          name,
+          level_id,
+          course_level:course_levels(
+            id,
+            course_id,
+            course:courses(id, name, code)
+          )
+        )
+      `,
+      )
+      .eq('class_id', classId)
+      .eq('code', code)
+      .eq('status', 'active')
+      .gt('valid_until', networkTime.toISOString())
+      .single();
+
+    if (codeError || !classCode) {
+      return {
+        valid: false,
+        message: 'Invalid or expired class code',
+      };
+    }
+
+    const courseLevelId: string | null = classCode?.topic?.level_id || null;
+    const courseId: string | null = classCode?.topic?.course_level?.course_id || null;
+
+    if (!courseLevelId || !courseId) {
+      // Code exists but is missing topic/level mapping; treat as invalid for navigation
+      return {
+        valid: false,
+        message: 'This class code is not linked to a course level',
+      };
+    }
+
+    // Ensure the class is actually enrolled/completed for that course level (basic safety)
+    const { data: assignment, error: assignmentError } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('id, enrollment_status')
+      .eq('class_id', classId)
+      .eq('course_level_id', courseLevelId)
+      .in('enrollment_status', ['enrolled', 'completed'])
+      .maybeSingle();
+
+    if (assignmentError || !assignment) {
+      return {
+        valid: false,
+        message: 'This code is for a course level not assigned to your class',
+      };
+    }
+
+    // Pre-fetch topic notes (note_elements) for faster loading (same logic as validateClassCode)
+    let topicNotes = null;
+    if (classCode.topic_id && classCode.topic) {
+      try {
+        const { data: notes } = await this.supabase
+          .from('notes')
+          .select('id')
+          .eq('topic_id', classCode.topic_id)
+          .eq('status', 'active');
+
+        if (notes && notes.length > 0) {
+          const noteIds = notes.map((n: any) => n.id);
+          const { data: noteElements } = await this.supabase
+            .from('note_elements')
+            .select(
+              `
+              id,
+              element_type,
+              content,
+              position_x,
+              position_y,
+              width,
+              height,
+              z_index,
+              font_size,
+              font_weight,
+              font_family,
+              font_color,
+              text_align,
+              background_color,
+              note_id,
+              order_index
+            `,
+            )
+            .in('note_id', noteIds)
+            .order('z_index', { ascending: true });
+
+          topicNotes = noteElements || [];
+        }
+      } catch (err) {
+        console.error('Error pre-fetching notes:', err);
+      }
+    }
+
+    return {
+      valid: true,
+      message: 'Class code verified successfully',
+      course_id: courseId,
+      course_level_id: courseLevelId,
+      topic_id: classCode.topic_id || null,
+      topic: classCode.topic || null,
+      topic_notes: topicNotes,
+    };
+  }
+
   async getCoursesForStudentClass(studentId: string): Promise<StudentCoursesResponse> {
     // Get student's class
     const { data: student, error: studentError } = await this.supabase

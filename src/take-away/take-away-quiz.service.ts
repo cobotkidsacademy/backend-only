@@ -120,6 +120,11 @@ export class TakeAwayQuizService {
   // ==================== QUESTION METHODS ====================
 
   async createQuestion(dto: CreateTakeAwayQuizQuestionDto): Promise<TakeAwayQuizQuestion> {
+    // Enforce required question text (as requested)
+    if (!dto.question_text || dto.question_text.trim().length === 0) {
+      throw new BadRequestException('Question text is required');
+    }
+
     const { data, error } = await this.supabase
       .from('take_away_quiz_questions')
       .insert({
@@ -129,7 +134,7 @@ export class TakeAwayQuizService {
         points: dto.points || 10,
         order_position: dto.order_position || 0,
         explanation: dto.explanation,
-        image_url: dto.image_url,
+        question_image_url: (dto as any).question_image_url,
         status: dto.status || 'active',
       })
       .select()
@@ -146,18 +151,25 @@ export class TakeAwayQuizService {
   }
 
   async updateQuestion(id: string, dto: UpdateTakeAwayQuizQuestionDto): Promise<TakeAwayQuizQuestion> {
+    // If question_text is explicitly cleared, reject (required)
+    if (dto.question_text === '') {
+      throw new BadRequestException('Question text is required');
+    }
+
+    const updatePayload: any = {
+      question_text: dto.question_text,
+      question_type: dto.question_type,
+      points: dto.points,
+      order_position: dto.order_position,
+      explanation: dto.explanation,
+      question_image_url: (dto as any).question_image_url,
+      status: dto.status,
+      updated_at: new Date().toISOString(),
+    };
+
     const { data, error } = await this.supabase
       .from('take_away_quiz_questions')
-      .update({
-        question_text: dto.question_text,
-        question_type: dto.question_type,
-        points: dto.points,
-        order_position: dto.order_position,
-        explanation: dto.explanation,
-        image_url: dto.image_url,
-        status: dto.status,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', id)
       .select()
       .single();
@@ -233,15 +245,23 @@ export class TakeAwayQuizService {
     console.log('Creating take-away quiz option with data:', {
       question_id: dto.question_id,
       option_text: dto.option_text,
+      option_image_url: dto.option_image_url,
       is_correct: dto.is_correct,
       order_position: dto.order_position,
     });
+
+    // Enforce at least text or image for the option
+    const optionImageUrl = dto.option_image_url;
+    if (!dto.option_text && !optionImageUrl) {
+      throw new BadRequestException('Option must have text, an image, or both');
+    }
 
     const { data, error } = await this.supabase
       .from('take_away_quiz_options')
       .insert({
         question_id: dto.question_id,
-        option_text: dto.option_text,
+        option_text: dto.option_text || null,
+        option_image_url: optionImageUrl || null,
         is_correct: dto.is_correct,
         order_position: dto.order_position || 0,
       })
@@ -264,10 +284,18 @@ export class TakeAwayQuizService {
   }
 
   async updateOption(id: string, dto: UpdateTakeAwayQuizOptionDto): Promise<TakeAwayQuizOption> {
+    const optionImageUrl = dto.option_image_url;
+
+    // If both text and image are explicitly cleared, reject
+    if (dto.option_text === '' && optionImageUrl === '') {
+      throw new BadRequestException('Option must have text, an image, or both');
+    }
+
     const { data, error } = await this.supabase
       .from('take_away_quiz_options')
       .update({
         option_text: dto.option_text,
+        option_image_url: optionImageUrl,
         is_correct: dto.is_correct,
         order_position: dto.order_position,
         updated_at: new Date().toISOString(),

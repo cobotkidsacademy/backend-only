@@ -49,3 +49,4 @@ CREATE TRIGGER trigger_update_class_upgrade_editor_assignments_updated_at
 
 
 
+

@@ -29,7 +29,10 @@ export interface TakeAwayQuizQuestion {
   points: number;
   order_position: number;
   explanation?: string;
+  // legacy field still present in DB
   image_url?: string;
+  // preferred field
+  question_image_url?: string;
   status: 'active' | 'inactive';
   created_at: string;
   updated_at: string;
@@ -40,6 +43,7 @@ export interface TakeAwayQuizOption {
   id: string;
   question_id: string;
   option_text: string;
+  option_image_url?: string;
   is_correct: boolean;
   order_position: number;
   created_at: string;
@@ -190,7 +194,7 @@ export class CreateTakeAwayQuizQuestionDto {
 
   @IsOptional()
   @IsString()
-  image_url?: string;
+  question_image_url?: string;
 
   @IsOptional()
   @IsString()
@@ -222,7 +226,7 @@ export class UpdateTakeAwayQuizQuestionDto {
 
   @IsOptional()
   @IsString()
-  image_url?: string;
+  question_image_url?: string;
 
   @IsOptional()
   @IsString()
@@ -236,8 +240,12 @@ export class CreateTakeAwayQuizOptionDto {
   question_id: string;
 
   @IsString()
-  @IsNotEmpty({ message: 'Option text is required' })
-  option_text: string;
+  @IsOptional()
+  option_text?: string;
+
+  @IsOptional()
+  @IsString()
+  option_image_url?: string;
 
   @IsBoolean()
   is_correct: boolean;
@@ -251,6 +259,10 @@ export class UpdateTakeAwayQuizOptionDto {
   @IsOptional()
   @IsString()
   option_text?: string;
+
+  @IsOptional()
+  @IsString()
+  option_image_url?: string;
 
   @IsOptional()
   @IsBoolean()

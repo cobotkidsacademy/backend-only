@@ -266,3 +266,4 @@ END $$;
 --   ANALYZE lessons;
 --   ANALYZE assignments;
 
+
