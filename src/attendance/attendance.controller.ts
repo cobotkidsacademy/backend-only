@@ -54,5 +54,60 @@ export class AttendanceController {
     }
     return this.attendanceService.getTutorAssignedClasses(req.user.sub);
   }
+
+  /**
+   * Report: time present + topic learned per day (student's own report)
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('report/me')
+  async getMyAttendanceAndTopicsReport(
+    @Request() req,
+    @Query('start_date') startDate: string,
+    @Query('end_date') endDate: string,
+  ) {
+    if (req.user?.role !== 'student') {
+      throw new UnauthorizedException('Only students can access this report');
+    }
+    const end = endDate || new Date().toISOString().split('T')[0];
+    const start = startDate || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      return d.toISOString().split('T')[0];
+    })();
+    return this.attendanceService.getAttendanceAndTopicsReport(req.user.sub, start, end);
+  }
+
+  /**
+   * Report: time present + topic learned per day for a class (admin/tutor)
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('report')
+  async getAttendanceAndTopicsReport(
+    @Request() req,
+    @Query('class_id') classId: string,
+    @Query('start_date') startDate: string,
+    @Query('end_date') endDate: string,
+    @Query('student_id') studentId?: string,
+  ) {
+    if (req.user?.role !== 'admin' && req.user?.role !== 'tutor') {
+      throw new UnauthorizedException('Only admin or tutor can access this report');
+    }
+    if (!classId || !startDate) {
+      throw new UnauthorizedException('class_id and start_date are required');
+    }
+    if (req.user?.role === 'tutor') {
+      const isAssigned = await this.attendanceService.isTutorAssignedToClass(req.user.sub, classId);
+      if (!isAssigned) {
+        throw new UnauthorizedException('You are not assigned to this class');
+      }
+    }
+    const end = endDate || new Date().toISOString().split('T')[0];
+    return this.attendanceService.getAttendanceAndTopicsReportForClass(
+      classId,
+      startDate,
+      end,
+      studentId || undefined,
+    );
+  }
 }
 

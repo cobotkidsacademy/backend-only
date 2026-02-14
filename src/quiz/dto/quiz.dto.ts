@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, IsBoolean, IsIn, IsUUID } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsBoolean, IsIn, IsUUID, IsArray } from 'class-validator';
 
 // ==================== Interfaces ====================
 
@@ -311,6 +311,12 @@ export class SubmitQuizDto {
   @IsNumber()
   @IsNotEmpty({ message: 'Time spent is required' })
   time_spent_seconds: number;
+
+  /** Teamed-up student IDs to apply the same quiz result to (same class only). */
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  team_member_ids?: string[];
 }
 
 // ==================== Response Types ====================

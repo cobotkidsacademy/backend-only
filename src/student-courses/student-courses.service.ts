@@ -139,6 +139,18 @@ export class StudentCoursesService {
       }
     }
 
+    // Record usage for report: "topic learned that day"
+    try {
+      await this.supabase.from('student_class_code_usage').insert({
+        student_id: studentId,
+        class_code_id: classCode.id,
+        topic_id: classCode.topic_id || null,
+        used_at: new Date().toISOString(),
+      });
+    } catch (usageErr) {
+      console.warn('Could not record class code usage:', usageErr);
+    }
+
     return {
       valid: true,
       message: 'Class code verified successfully',

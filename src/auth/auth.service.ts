@@ -253,6 +253,115 @@ export class AuthService {
     }
   }
 
+  /**
+   * Check if student usernames are valid for team-up (exist, active, same class as host).
+   * Used when students share one device and the logged-in student adds teammates by username.
+   */
+  async teamUpCheck(hostStudentId: string, usernames: string[]): Promise<{
+    valid: Array<{ username: string; id: string; first_name: string; last_name: string }>;
+    invalid: Array<{ username: string; reason: string }>;
+  }> {
+    const normalized = usernames.map((u) => (u || '').trim().toLowerCase()).filter(Boolean);
+    const unique = [...new Set(normalized)];
+
+    const { data: host, error: hostError } = await this.supabase
+      .from('students')
+      .select('id, class_id, school_id, username')
+      .eq('id', hostStudentId)
+      .single();
+
+    if (hostError || !host) {
+      throw new NotFoundException('Logged-in student not found');
+    }
+
+    const valid: Array<{ username: string; id: string; first_name: string; last_name: string }> = [];
+    const invalid: Array<{ username: string; reason: string }> = [];
+
+    for (const username of unique) {
+      const { data: student, error } = await this.supabase
+        .from('students')
+        .select('id, username, first_name, last_name, class_id, status')
+        .ilike('username', username)
+        .maybeSingle();
+
+      if (error || !student) {
+        invalid.push({ username, reason: 'Username not found' });
+        continue;
+      }
+      if (student.status !== 'active') {
+        invalid.push({ username: student.username, reason: 'Account is not active' });
+        continue;
+      }
+      if (student.id === hostStudentId) {
+        invalid.push({ username: student.username, reason: 'Cannot add yourself' });
+        continue;
+      }
+      if (student.class_id !== host.class_id) {
+        invalid.push({ username: student.username, reason: 'Not in the same class' });
+        continue;
+      }
+      valid.push({
+        username: student.username,
+        id: student.id,
+        first_name: student.first_name,
+        last_name: student.last_name,
+      });
+    }
+
+    return { valid, invalid };
+  }
+
+  /**
+   * Register teammates as logged in and mark attendance for each.
+   * Only students that pass teamUpCheck (same class, active) should be in usernames.
+   */
+  async teamUp(hostStudentId: string, usernames: string[]): Promise<{
+    teamed: Array<{ id: string; username: string; first_name: string; last_name: string; login_timestamp: string }>;
+    invalid: Array<{ username: string; reason: string }>;
+  }> {
+    const check = await this.teamUpCheck(hostStudentId, usernames);
+    const loginTimestamp = new Date().toISOString();
+    const teamed: Array<{ id: string; username: string; first_name: string; last_name: string; login_timestamp: string }> = [];
+
+    // Mark the logged-in student (host) as present for this session
+    this.attendanceService.markPresentForSession(hostStudentId, loginTimestamp).catch((err) => {
+      this.logger.warn(`Failed to mark host attendance: ${err.message}`);
+    });
+
+    for (const v of check.valid) {
+      const { data: student } = await this.supabase
+        .from('students')
+        .select('id, login_count')
+        .eq('id', v.id)
+        .single();
+
+      if (!student) continue;
+
+      const currentLoginCount = (student as any).login_count || 0;
+      await this.supabase
+        .from('students')
+        .update({
+          last_login: loginTimestamp,
+          login_count: currentLoginCount + 1,
+        })
+        .eq('id', v.id);
+
+      this.attendanceService.markPresentForSession(v.id, loginTimestamp).catch((err) => {
+        this.logger.warn(`Failed to mark teammate attendance ${v.id}: ${err.message}`);
+      });
+
+      teamed.push({
+        id: v.id,
+        username: v.username,
+        first_name: v.first_name,
+        last_name: v.last_name,
+        login_timestamp: loginTimestamp,
+      });
+    }
+
+    return { teamed, invalid: check.invalid };
+  }
+
   async getStudentInfo(studentId: string) {
     // Get student basic info first (needed for class_id)
     const { data: student, error: studentError } = await this.supabase

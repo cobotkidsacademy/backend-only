@@ -644,6 +644,60 @@ export class QuizService {
     console.log('Points update result - isNewHighScore:', isNewHighScore);
     console.log('Points update result - totalPoints:', totalPoints);
 
+    // Apply same result to teamed-up students (same class only)
+    const hostId = attempt.student_id || studentId;
+    if (dto.team_member_ids?.length && hostId) {
+      const { data: hostStudent } = await this.supabase
+        .from('students')
+        .select('class_id')
+        .eq('id', hostId)
+        .single();
+
+      if (hostStudent?.class_id) {
+        const { data: sameClassStudents } = await this.supabase
+          .from('students')
+          .select('id')
+          .in('id', dto.team_member_ids)
+          .eq('class_id', hostStudent.class_id);
+
+        const teammateIds = (sameClassStudents || [])
+          .map((s: { id: string }) => s.id)
+          .filter((id: string) => id !== hostId);
+
+        const completedAt = new Date().toISOString();
+        for (const teammateId of teammateIds) {
+          const { data: newAttempt, error: insertAttemptErr } = await this.supabase
+            .from('student_quiz_attempts')
+            .insert({
+              student_id: teammateId,
+              quiz_id: attempt.quiz_id,
+              score: totalScore,
+              max_score: maxScore,
+              percentage: percentage,
+              passed: passed,
+              time_spent_seconds: dto.time_spent_seconds,
+              completed_at: completedAt,
+              status: 'completed',
+            })
+            .select('id')
+            .single();
+
+          if (insertAttemptErr || !newAttempt?.id) continue;
+
+          const teamAnswers = answersToInsert.map((a: any) => ({
+            attempt_id: newAttempt.id,
+            question_id: a.question_id,
+            selected_option_id: a.selected_option_id,
+            is_correct: a.is_correct,
+            points_earned: a.points_earned,
+          }));
+          await this.supabase.from('student_quiz_answers').insert(teamAnswers);
+
+          await this.updateBestScore(teammateId, attempt.quiz_id, totalScore, percentage);
+        }
+      }
+    }
+
     return {
       attempt: updatedAttempt,
       correct_answers: correctAnswers,

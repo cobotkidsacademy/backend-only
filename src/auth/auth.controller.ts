@@ -17,6 +17,7 @@ import {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StudentLoginDto } from './dto/student-login.dto';
+import { TeamUpDto } from './dto/team-up.dto';
 import { UpdateStudentProfileDto } from './dto/update-student-profile.dto';
 import { CreateParentAccountDto } from './dto/create-parent-account.dto';
 import { LinkStudentDto } from './dto/link-student.dto';
@@ -94,6 +95,28 @@ export class AuthController {
   @Get('student/me')
   async getStudentInfo(@Request() req) {
     return this.authService.getStudentInfo(req.user.sub);
+  }
+
+  /** Check if usernames are valid for team-up (same class, active). Student only. */
+  @UseGuards(JwtAuthGuard)
+  @Post('student/team-up/check')
+  @HttpCode(HttpStatus.OK)
+  async teamUpCheck(@Request() req, @Body() dto: TeamUpDto) {
+    if (req.user?.role !== 'student') {
+      throw new UnauthorizedException('Only students can use team-up');
+    }
+    return this.authService.teamUpCheck(req.user.sub, dto.usernames);
+  }
+
+  /** Register teammates as logged in and mark attendance. Student only. */
+  @UseGuards(JwtAuthGuard)
+  @Post('student/team-up')
+  @HttpCode(HttpStatus.OK)
+  async teamUp(@Request() req, @Body() dto: TeamUpDto) {
+    if (req.user?.role !== 'student') {
+      throw new UnauthorizedException('Only students can use team-up');
+    }
+    return this.authService.teamUp(req.user.sub, dto.usernames);
   }
 
   @UseGuards(JwtAuthGuard)
