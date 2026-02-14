@@ -326,84 +326,96 @@ export class SchoolService {
       throw new NotFoundException('School not found');
     }
 
-    // Parse student names and create student objects
-    const studentsToInsert = [];
+    const schoolCode = school.code;
     const defaultPassword = '1234';
     const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+    // Single query: fetch ALL existing students in this school for fast lookup
+    const { data: existingStudents } = await this.supabase
+      .from('students')
+      .select('id, first_name, last_name, username')
+      .eq('school_id', dto.school_id);
+
+    const existingByName = new Set<string>();
+    const existingUsernames = new Set<string>();
+    for (const s of existingStudents || []) {
+      const key = `${(s.first_name || '').toLowerCase()}|${(s.last_name || '').toLowerCase()}`;
+      existingByName.add(key);
+      existingUsernames.add((s.username || '').toLowerCase());
+    }
+
+    const studentsToInsert: Array<{
+      class_id: string;
+      school_id: string;
+      first_name: string;
+      last_name: string;
+      username: string;
+      password_hash: string;
+      plain_password: string;
+    }> = [];
     const conflicts: any[] = [];
+    const usedUsernamesInBatch = new Set<string>(existingUsernames);
 
     for (const studentName of dto.students) {
-      // Trim and split by space
       const trimmed = studentName.trim();
-      if (!trimmed) continue; // Skip empty lines
+      if (!trimmed) continue;
 
       const parts = trimmed.split(/\s+/);
-      if (parts.length < 2) {
-        // If only one word, use it as first name and empty last name
-        parts.push('');
-      }
+      const firstName = parts[0] || '';
+      const lastName = parts.length < 2 ? '' : parts.slice(1).join(' ');
+      if (!firstName) continue;
 
-      const firstName = parts[0];
-      const lastName = parts.slice(1).join(' '); // Join remaining parts as last name
-
-      if (!firstName) continue; // Skip if no first name
-
-      // Check if a student with the same name already exists in this school
-      const existingByName = await this.findExistingStudentByName(
-        dto.school_id,
-        firstName,
-        lastName,
-      );
-
-      if (existingByName) {
-        // Skip creating this student and record the conflict
+      const lookupKey = `${firstName.toLowerCase()}|${lastName.toLowerCase()}`;
+      if (existingByName.has(lookupKey)) {
         conflicts.push({
           full_name: trimmed,
           first_name: firstName,
           last_name: lastName,
-          existing_student: {
-            id: existingByName.id,
-            first_name: existingByName.first_name,
-            last_name: existingByName.last_name,
-            class_id: existingByName.class_id,
-            username: existingByName.username,
-          },
+          reason: 'already_exists',
         });
         continue;
       }
 
-      // Generate username
-      const username = await this.generateStudentUsername(
-        school.code,
-        firstName,
-        lastName,
-      );
+      // Generate unique username in memory (no DB calls)
+      const baseUsername = `${schoolCode}-${firstName}${lastName}`
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '');
+      let username = baseUsername;
+      let counter = 1;
+      while (usedUsernamesInBatch.has(username)) {
+        username = baseUsername + counter;
+        counter++;
+      }
+      usedUsernamesInBatch.add(username);
 
       studentsToInsert.push({
         class_id: dto.class_id,
         school_id: dto.school_id,
         first_name: firstName,
         last_name: lastName || '',
-        username: username,
+        username,
         password_hash: passwordHash,
         plain_password: defaultPassword,
       });
+      existingByName.add(lookupKey); // Prevent duplicates in same batch
     }
 
     let createdStudents: any[] = [];
 
     if (studentsToInsert.length > 0) {
-      // Insert all non-conflicting students
-      const { data, error } = await this.supabase
-        .from('students')
-        .insert(studentsToInsert)
-        .select();
+      const BATCH_SIZE = 2000;
+      for (let i = 0; i < studentsToInsert.length; i += BATCH_SIZE) {
+        const batch = studentsToInsert.slice(i, i + BATCH_SIZE);
+        const { data, error } = await this.supabase
+          .from('students')
+          .insert(batch)
+          .select();
 
-      if (error) {
-        throw new ConflictException(error.message);
+        if (error) {
+          throw new ConflictException(error.message);
+        }
+        createdStudents = createdStudents.concat(data || []);
       }
-
-      createdStudents = data || [];
     }
 
     if (createdStudents.length === 0 && conflicts.length === 0) {
@@ -418,6 +430,7 @@ export class SchoolService {
         generated_password: defaultPassword,
       })),
       conflicts,
+      skipped: conflicts.length,
     };
   }
 

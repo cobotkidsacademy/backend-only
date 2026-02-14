@@ -179,6 +179,14 @@ export class CreateNoteElementDto {
 
   @IsOptional()
   @IsString()
+  font_family?: string;
+
+  @IsOptional()
+  @IsString()
+  font_color?: string;
+
+  @IsOptional()
+  @IsString()
   font_weight?: string;
 
   @IsOptional()
@@ -218,6 +226,14 @@ export class UpdateNoteElementDto {
   @IsOptional()
   @IsNumber()
   font_size?: number;
+
+  @IsOptional()
+  @IsString()
+  font_family?: string;
+
+  @IsOptional()
+  @IsString()
+  font_color?: string;
 
   @IsOptional()
   @IsString()
