@@ -20,6 +20,7 @@ import { AttendanceModule } from './attendance/attendance.module';
 import { BugsModule } from './bugs/bugs.module';
 import { FormsModule } from './forms/forms.module';
 import { TakeAwayModule } from './take-away/take-away.module';
+import { MessagingModule } from './messaging/messaging.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { TakeAwayModule } from './take-away/take-away.module';
     BugsModule,
     FormsModule,
     TakeAwayModule,
+    MessagingModule,
   ],
   controllers: [AppController],
   providers: [AppService, KeepAliveService],

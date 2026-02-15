@@ -1262,10 +1262,11 @@ export class AttendanceService {
     const entries = sortedDates.map((date) => {
       const att = attendanceByDate.get(date);
       const topic = topicByDate.get(date) || null;
+      const status = att?.status ?? null;
       return {
         date,
         login_timestamp: att?.login_timestamp ?? null,
-        status: att?.status ?? null,
+        status: status as 'present' | 'late' | 'absent' | null,
         topic_learned: topic,
       };
     });
