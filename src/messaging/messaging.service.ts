@@ -48,19 +48,40 @@ export class MessagingService {
     return 'Unknown';
   }
 
-  private async getStudentSchoolClass(studentId: string): Promise<{
+  private async getStudentDetails(studentId: string): Promise<{
     school_name: string;
     class_name: string;
+    profile_image_url: string | null;
+    first_name: string;
+    username: string;
   }> {
     const { data } = await this.supabase
       .from('students')
-      .select('classes(name, schools(name))')
+      .select('profile_image_url, first_name, username, classes(name, schools(name))')
       .eq('id', studentId)
       .single();
     const classData = (data as any)?.classes;
     return {
       school_name: classData?.schools?.name ?? '',
       class_name: classData?.name ?? '',
+      profile_image_url: (data as any)?.profile_image_url ?? null,
+      first_name: (data as any)?.first_name ?? '',
+      username: (data as any)?.username ?? '',
+    };
+  }
+
+  private async getTutorParticipantDetails(tutorId: string): Promise<{
+    profile_image_url: string | null;
+    first_name: string;
+  }> {
+    const { data } = await this.supabase
+      .from('tutors')
+      .select('profile_image_url, first_name')
+      .eq('id', tutorId)
+      .single();
+    return {
+      profile_image_url: (data as any)?.profile_image_url ?? null,
+      first_name: (data as any)?.first_name ?? '',
     };
   }
 
@@ -114,8 +135,23 @@ export class MessagingService {
           last_message_at: c.last_message_at,
         };
         if (otherType === 'student') {
-          const { school_name, class_name } = await this.getStudentSchoolClass(otherId);
-          return { ...base, other_school_name: school_name, other_class_name: class_name };
+          const d = await this.getStudentDetails(otherId);
+          return {
+            ...base,
+            other_school_name: d.school_name,
+            other_class_name: d.class_name,
+            other_profile_image_url: d.profile_image_url,
+            other_first_name: d.first_name,
+            other_username: d.username,
+          };
+        }
+        if (otherType === 'tutor') {
+          const d = await this.getTutorParticipantDetails(otherId);
+          return {
+            ...base,
+            other_profile_image_url: d.profile_image_url,
+            other_first_name: d.first_name,
+          };
         }
         return base;
       }),
@@ -146,6 +182,23 @@ export class MessagingService {
       otherId = isA ? conv.participant_b_id : conv.participant_a_id;
     }
     const otherName = await this.getParticipantName(otherType, otherId);
+    const extra: Record<string, unknown> = {};
+    if (otherType === 'student') {
+      const d = await this.getStudentDetails(otherId);
+      Object.assign(extra, {
+        other_school_name: d.school_name,
+        other_class_name: d.class_name,
+        other_profile_image_url: d.profile_image_url,
+        other_first_name: d.first_name,
+        other_username: d.username,
+      });
+    } else if (otherType === 'tutor') {
+      const d = await this.getTutorParticipantDetails(otherId);
+      Object.assign(extra, {
+        other_profile_image_url: d.profile_image_url,
+        other_first_name: d.first_name,
+      });
+    }
 
     const { data: msgs } = await this.supabase
       .from('messages')
@@ -159,6 +212,7 @@ export class MessagingService {
       other_participant_id: otherId,
       other_participant_name: otherName,
       messages: msgs || [],
+      ...extra,
     };
   }
 
@@ -340,7 +394,7 @@ export class MessagingService {
     const parts = trimmed.split(/\s+/).filter(Boolean);
     let q = this.supabase
       .from('students')
-      .select('id, first_name, last_name, username, class_id, classes(name, schools(name))');
+      .select('id, first_name, last_name, username, profile_image_url, class_id, classes(name, schools(name))');
     if (parts.length >= 2) {
       q = q.ilike('first_name', `%${parts[0]}%`).ilike('last_name', `%${parts[parts.length - 1]}%`);
     } else {
@@ -368,7 +422,9 @@ export class MessagingService {
       return {
         id: s.id,
         name: `${s.first_name} ${s.last_name}`.trim(),
+        first_name: s.first_name,
         username: s.username,
+        profile_image_url: (s as any).profile_image_url ?? null,
         type: 'student' as const,
         school_name: schoolName,
         class_name: className,
@@ -381,7 +437,7 @@ export class MessagingService {
     if (!trimmed || trimmed.length < 2) return [];
     const { data } = await this.supabase
       .from('tutors')
-      .select('id, first_name, last_name, email')
+      .select('id, first_name, last_name, email, profile_image_url')
       .or(
         `first_name.ilike.%${trimmed}%,last_name.ilike.%${trimmed}%,email.ilike.%${trimmed}%`,
       )
@@ -389,13 +445,15 @@ export class MessagingService {
     return (data || []).map((t) => ({
       id: t.id,
       name: `${t.first_name} ${t.last_name}`.trim(),
-      email: t.email,
+      first_name: (t as any).first_name,
+      email: (t as any).email,
+      profile_image_url: (t as any).profile_image_url ?? null,
       type: 'tutor' as const,
     }));
   }
 
-  async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {
-    const contacts: Array<{ type: ParticipantType; id: string; name: string }> = [];
+  async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }>> {
+    const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }> = [];
 
     // Admin: use first admin as "Admin" contact
     const { data: admins } = await this.supabase.from('admins').select('id, email').limit(1);
@@ -412,7 +470,7 @@ export class MessagingService {
     if (student?.class_id) {
       const { data: assignments } = await this.supabase
         .from('tutor_class_assignments')
-        .select('tutor:tutors(id, first_name, last_name)')
+        .select('tutor:tutors(id, first_name, last_name, profile_image_url)')
         .eq('class_id', student.class_id)
         .eq('status', 'active');
       for (const a of assignments || []) {
@@ -422,6 +480,8 @@ export class MessagingService {
             type: 'tutor',
             id: t.id,
             name: `${t.first_name} ${t.last_name}`.trim(),
+            first_name: t.first_name,
+            profile_image_url: t.profile_image_url ?? null,
           });
         }
       }
