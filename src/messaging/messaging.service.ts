@@ -455,10 +455,10 @@ export class MessagingService {
   async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }>> {
     const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }> = [];
 
-    // Admin: use first admin as "Admin" contact
+    // Admin: use first admin as "Super Admin ready to chat" contact
     const { data: admins } = await this.supabase.from('admins').select('id, email').limit(1);
     if (admins?.length) {
-      contacts.push({ type: 'admin', id: admins[0].id, name: 'Admin' });
+      contacts.push({ type: 'admin', id: admins[0].id, name: 'Super Admin ready to chat' });
     }
 
     // Tutors assigned to student's class
@@ -492,7 +492,7 @@ export class MessagingService {
   async getTutorContacts(tutorId: string): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {
     const { data: admins } = await this.supabase.from('admins').select('id, email').limit(1);
     if (!admins?.length) return [];
-    return [{ type: 'admin', id: admins[0].id, name: 'Admin' }];
+    return [{ type: 'admin', id: admins[0].id, name: 'Super Admin ready to chat' }];
   }
 
   async getAdminContacts(): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {
