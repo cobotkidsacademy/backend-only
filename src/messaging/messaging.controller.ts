@@ -116,6 +116,12 @@ export class MessagingController {
     return { conversation_id: conversationId };
   }
 
+  @Get('unread-count')
+  async getUnreadCount(@Request() req) {
+    const { role, id } = this.getUser(req);
+    return this.messagingService.getUnreadCount(role, id);
+  }
+
   @Get('contacts')
   async getContacts(@Request() req) {
     const { role, id } = this.getUser(req);

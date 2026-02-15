@@ -91,7 +91,6 @@ export class MessagingService {
   }
 
   async getConversations(userRole: ParticipantType, userId: string) {
-    // Use two queries instead of .or() to avoid UUID/filter issues - ensures both parties see the conversation
     const [resA, resB] = await Promise.all([
       this.supabase
         .from('conversations')
@@ -116,47 +115,130 @@ export class MessagingService {
     });
     convs.sort((a, b) => new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime());
 
-    const result = await Promise.all(
-      convs.map(async (c) => {
-        let isA = c.participant_a_type === userRole && this.sameId(c.participant_a_id, userId);
-        let otherType = isA ? c.participant_b_type : c.participant_a_type;
-        let otherId = isA ? c.participant_b_id : c.participant_a_id;
-        if (otherType === userRole && this.sameId(otherId, userId)) {
-          isA = !isA;
-          otherType = isA ? c.participant_b_type : c.participant_a_type;
-          otherId = isA ? c.participant_b_id : c.participant_a_id;
-        }
-        const name = await this.getParticipantName(otherType, otherId);
-        const base = {
-          id: c.id,
-          other_participant_type: otherType,
-          other_participant_id: otherId,
-          other_participant_name: name,
-          last_message_at: c.last_message_at,
-        };
-        if (otherType === 'student') {
-          const d = await this.getStudentDetails(otherId);
-          return {
-            ...base,
-            other_school_name: d.school_name,
-            other_class_name: d.class_name,
-            other_profile_image_url: d.profile_image_url,
-            other_first_name: d.first_name,
-            other_username: d.username,
-          };
-        }
-        if (otherType === 'tutor') {
-          const d = await this.getTutorParticipantDetails(otherId);
-          return {
-            ...base,
-            other_profile_image_url: d.profile_image_url,
-            other_first_name: d.first_name,
-          };
-        }
-        return base;
+    const byType: { admin: string[]; tutor: string[]; student: string[] } = {
+      admin: [],
+      tutor: [],
+      student: [],
+    };
+    for (const c of convs) {
+      let isA = c.participant_a_type === userRole && this.sameId(c.participant_a_id, userId);
+      let otherType = isA ? c.participant_b_type : c.participant_a_type;
+      let otherId = isA ? c.participant_b_id : c.participant_a_id;
+      if (otherType === userRole && this.sameId(otherId, userId)) {
+        isA = !isA;
+        otherType = isA ? c.participant_b_type : c.participant_a_type;
+        otherId = isA ? c.participant_b_id : c.participant_a_id;
+      }
+      if (otherId && byType[otherType]) byType[otherType].push(otherId);
+    }
+    const unique = (arr: string[]) => [...new Set(arr)];
+
+    const [adminsData, tutorsData, studentsData] = await Promise.all([
+      byType.admin.length
+        ? this.supabase.from('admins').select('id, email').in('id', unique(byType.admin))
+        : Promise.resolve({ data: [] }),
+      byType.tutor.length
+        ? this.supabase.from('tutors').select('id, first_name, last_name, profile_image_url').in('id', unique(byType.tutor))
+        : Promise.resolve({ data: [] }),
+      byType.student.length
+        ? this.supabase
+            .from('students')
+            .select('id, first_name, last_name, username, profile_image_url, classes(name, schools(name))')
+            .in('id', unique(byType.student))
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const adminMap = new Map<string, { name: string }>();
+    (adminsData.data || []).forEach((a: any) => adminMap.set(a.id, { name: a.email || 'Admin' }));
+    const tutorMap = new Map<
+      string,
+      { name: string; profile_image_url: string | null; first_name: string }
+    >();
+    (tutorsData.data || []).forEach((t: any) =>
+      tutorMap.set(t.id, {
+        name: `${t.first_name || ''} ${t.last_name || ''}`.trim() || 'Tutor',
+        profile_image_url: t.profile_image_url ?? null,
+        first_name: t.first_name || '',
       }),
     );
-    return result;
+    const studentMap = new Map<
+      string,
+      { name: string; school_name: string; class_name: string; profile_image_url: string | null; first_name: string; username: string }
+    >();
+    (studentsData.data || []).forEach((s: any) => {
+      const classData = s?.classes;
+      studentMap.set(s.id, {
+        name: `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Student',
+        school_name: classData?.schools?.name ?? '',
+        class_name: classData?.name ?? '',
+        profile_image_url: s.profile_image_url ?? null,
+        first_name: s.first_name ?? '',
+        username: s.username ?? '',
+      });
+    });
+
+    const convIds = convs.map((c) => c.id);
+    const unreadByConv = new Map<string, number>();
+    if (convIds.length > 0) {
+      const { data: unreadMsgs } = await this.supabase
+        .from('messages')
+        .select('conversation_id')
+        .in('conversation_id', convIds)
+        .is('read_at', null)
+        .or(`sender_type.neq.${userRole},sender_id.neq.${userId}`);
+      for (const m of unreadMsgs || []) {
+        unreadByConv.set(m.conversation_id, (unreadByConv.get(m.conversation_id) || 0) + 1);
+      }
+    }
+
+    return convs.map((c) => {
+      let isA = c.participant_a_type === userRole && this.sameId(c.participant_a_id, userId);
+      let otherType = isA ? c.participant_b_type : c.participant_a_type;
+      let otherId = isA ? c.participant_b_id : c.participant_a_id;
+      if (otherType === userRole && this.sameId(otherId, userId)) {
+        isA = !isA;
+        otherType = isA ? c.participant_b_type : c.participant_a_type;
+        otherId = isA ? c.participant_b_id : c.participant_a_id;
+      }
+      const base = {
+        id: c.id,
+        other_participant_type: otherType,
+        other_participant_id: otherId,
+        other_participant_name: 'Unknown',
+        last_message_at: c.last_message_at,
+        unread_count: unreadByConv.get(c.id) || 0,
+      };
+      if (otherType === 'admin') {
+        const a = adminMap.get(otherId);
+        return { ...base, other_participant_name: a?.name ?? 'Admin' };
+      }
+      if (otherType === 'tutor') {
+        const t = tutorMap.get(otherId);
+        return t
+          ? {
+              ...base,
+              other_participant_name: t.name,
+              other_profile_image_url: t.profile_image_url,
+              other_first_name: t.first_name,
+            }
+          : base;
+      }
+      if (otherType === 'student') {
+        const st = studentMap.get(otherId);
+        return st
+          ? {
+              ...base,
+              other_participant_name: st.name,
+              other_school_name: st.school_name,
+              other_class_name: st.class_name,
+              other_profile_image_url: st.profile_image_url,
+              other_first_name: st.first_name,
+              other_username: st.username,
+            }
+          : { ...base, other_participant_name: 'Student' };
+      }
+      return base;
+    });
   }
 
   async getConversation(conversationId: string, userRole: ParticipantType, userId: string) {
@@ -260,7 +342,12 @@ export class MessagingService {
       .eq('id', conversationId);
 
     try {
-      this.gateway.emitNewMessage(conversationId, msg);
+      const recipient =
+        conv.participant_a_type === senderType && this.sameId(conv.participant_a_id, senderId)
+          ? { type: conv.participant_b_type, id: conv.participant_b_id }
+          : { type: conv.participant_a_type, id: conv.participant_a_id };
+      const recipientRoom = `user:${recipient.type}:${recipient.id}`;
+      this.gateway.emitNewMessage(conversationId, msg, recipientRoom);
     } catch (e) {
       // WebSocket emit may fail if no clients connected
     }
@@ -347,6 +434,35 @@ export class MessagingService {
       } catch (_e) {}
     });
     return { marked: ids.length };
+  }
+
+  async getUnreadCount(userRole: ParticipantType, userId: string): Promise<{ count: number }> {
+    const [resA, resB] = await Promise.all([
+      this.supabase
+        .from('conversations')
+        .select('id')
+        .eq('participant_a_type', userRole)
+        .eq('participant_a_id', userId),
+      this.supabase
+        .from('conversations')
+        .select('id')
+        .eq('participant_b_type', userRole)
+        .eq('participant_b_id', userId),
+    ]);
+    const ids = [
+      ...(resA.data || []).map((c) => c.id),
+      ...(resB.data || []).map((c) => c.id),
+    ];
+    const convIds = [...new Set(ids)];
+    if (convIds.length === 0) return { count: 0 };
+    const { count, error } = await this.supabase
+      .from('messages')
+      .select('*', { count: 'exact', head: true })
+      .in('conversation_id', convIds)
+      .is('read_at', null)
+      .or(`sender_type.neq.${userRole},sender_id.neq.${userId}`);
+    if (error) return { count: 0 };
+    return { count: count ?? 0 };
   }
 
   async findOrCreateConversation(
@@ -455,10 +571,20 @@ export class MessagingService {
   async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }>> {
     const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }> = [];
 
-    // Admin: use first admin as "Super Admin ready to chat" contact
-    const { data: admins } = await this.supabase.from('admins').select('id, email').limit(1);
-    if (admins?.length) {
-      contacts.push({ type: 'admin', id: admins[0].id, name: 'Super Admin ready to chat' });
+    // Admin: prefer admin@example.com, fallback to first admin
+    let admin: { id: string; email: string } | null = null;
+    const { data: superAdmin } = await this.supabase
+      .from('admins')
+      .select('id, email')
+      .eq('email', 'admin@example.com')
+      .maybeSingle();
+    if (superAdmin) admin = superAdmin;
+    else {
+      const { data: first } = await this.supabase.from('admins').select('id, email').limit(1);
+      if (first?.length) admin = first[0];
+    }
+    if (admin) {
+      contacts.push({ type: 'admin', id: admin.id, name: 'Super Admin ready to chat' });
     }
 
     // Tutors assigned to student's class
@@ -490,9 +616,14 @@ export class MessagingService {
   }
 
   async getTutorContacts(tutorId: string): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {
-    const { data: admins } = await this.supabase.from('admins').select('id, email').limit(1);
-    if (!admins?.length) return [];
-    return [{ type: 'admin', id: admins[0].id, name: 'Super Admin ready to chat' }];
+    const { data: superAdmin } = await this.supabase
+      .from('admins')
+      .select('id, email')
+      .eq('email', 'admin@example.com')
+      .maybeSingle();
+    const admin = superAdmin ?? (await this.supabase.from('admins').select('id, email').limit(1)).data?.[0];
+    if (!admin) return [];
+    return [{ type: 'admin', id: admin.id, name: 'Super Admin ready to chat' }];
   }
 
   async getAdminContacts(): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {

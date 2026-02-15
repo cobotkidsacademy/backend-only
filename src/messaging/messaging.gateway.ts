@@ -137,8 +137,11 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     this.typingTimers.set(key, t);
   }
 
-  emitNewMessage(conversationId: string, message: any) {
+  emitNewMessage(conversationId: string, message: any, recipientRoom?: string) {
     this.server.to(`conv:${conversationId}`).emit('message:new', message);
+    if (recipientRoom) {
+      this.server.to(recipientRoom).emit('message:new', message);
+    }
   }
 
   emitMessageRead(conversationId: string, messageId: string, readAt: string) {
