@@ -6,10 +6,32 @@ import {
   StudentCoursesResponse,
   ClassCodeValidationResponse,
 } from './dto/student-courses.dto';
+import { SelfClassCodeService } from '../self-class-code/self-class-code.service';
 
 @Injectable()
 export class StudentCoursesService {
-  constructor(@Inject('SUPABASE_CLIENT') private supabase: SupabaseClient) {}
+  constructor(
+    @Inject('SUPABASE_CLIENT') private supabase: SupabaseClient,
+    private selfClassCodeService: SelfClassCodeService,
+  ) {}
+
+  private normalizeTopicForResponse(topic: any): ClassCodeValidationResponse['topic'] {
+    if (!topic) return null;
+    const courseLevel = Array.isArray(topic.course_level) ? topic.course_level[0] : topic.course_level;
+    const course = courseLevel && (Array.isArray(courseLevel.course) ? courseLevel.course[0] : courseLevel.course);
+    return {
+      id: topic.id,
+      name: topic.name,
+      level_id: topic.level_id,
+      ...(courseLevel && {
+        course_level: {
+          id: courseLevel.id,
+          course_id: courseLevel.course_id,
+          ...(course && { course }),
+        },
+      }),
+    };
+  }
 
   /**
    * Validate class code without requiring the client to provide a course level.
@@ -62,6 +84,72 @@ export class StudentCoursesService {
       .single();
 
     if (codeError || !classCode) {
+      // Try self-class-code (student-generated for home practice)
+      const selfResult = await this.selfClassCodeService.validateSelfClassCode(
+        studentId,
+        code,
+        classId,
+      );
+      if (selfResult.valid && selfResult.topic_id) {
+        const { data: topic } = await this.supabase
+          .from('topics')
+          .select(`
+            id, name, level_id,
+            course_level:course_levels(
+              id, course_id,
+              course:courses(id, name, code)
+            )
+          `)
+          .eq('id', selfResult.topic_id)
+          .single();
+
+        if (topic?.level_id) {
+          const courseLevelId = topic.level_id;
+          const courseLevel = Array.isArray(topic.course_level) ? topic.course_level[0] : topic.course_level;
+          const courseId = courseLevel?.course_id ?? null;
+
+          const { data: assignment } = await this.supabase
+            .from('class_course_level_assignments')
+            .select('id')
+            .eq('class_id', classId)
+            .eq('course_level_id', courseLevelId)
+            .in('enrollment_status', ['enrolled', 'completed'])
+            .maybeSingle();
+
+          if (assignment) {
+            let topicNotes = null;
+            try {
+              const { data: notes } = await this.supabase
+                .from('notes')
+                .select('id')
+                .eq('topic_id', selfResult.topic_id)
+                .eq('status', 'active');
+              if (notes?.length) {
+                const { data: noteElements } = await this.supabase
+                  .from('note_elements')
+                  .select(`
+                    id, element_type, content, position_x, position_y,
+                    width, height, z_index, font_size, font_weight, font_family,
+                    font_color, text_align, background_color, note_id, order_index
+                  `)
+                  .in('note_id', notes.map((n: any) => n.id))
+                  .order('z_index', { ascending: true });
+                topicNotes = noteElements || [];
+              }
+            } catch {}
+            const topicNorm = this.normalizeTopicForResponse(topic);
+            return {
+              valid: true,
+              message: 'Class code verified successfully',
+              course_id: courseId,
+              course_level_id: courseLevelId,
+              topic_id: selfResult.topic_id,
+              topic: topicNorm,
+              topic_notes: topicNotes,
+            };
+          }
+        }
+      }
       return {
         valid: false,
         message: 'Invalid or expired class code',
@@ -325,9 +413,64 @@ export class StudentCoursesService {
       .single();
 
     if (codeError || !classCode) {
+      // Try self-class-code (student-generated for home practice)
+      const selfResult = await this.selfClassCodeService.validateSelfClassCode(
+        studentId,
+        code,
+        classId,
+      );
+      if (selfResult.valid && selfResult.topic_id) {
+        const { data: topic } = await this.supabase
+          .from('topics')
+          .select(`
+            id, name, level_id,
+            course_level:course_levels(
+              id, course_id,
+              course:courses(id, name, code)
+            )
+          `)
+          .eq('id', selfResult.topic_id)
+          .single();
+
+        if (topic && topic.level_id === courseLevelId) {
+          let topicNotes = null;
+          try {
+            const { data: notes } = await this.supabase
+              .from('notes')
+              .select('id')
+              .eq('topic_id', selfResult.topic_id)
+              .eq('status', 'active');
+            if (notes?.length) {
+              const { data: noteElements } = await this.supabase
+                .from('note_elements')
+                .select(`
+                  id, element_type, content, position_x, position_y,
+                  width, height, z_index, font_size, font_weight, font_family,
+                  font_color, text_align, background_color, note_id, order_index
+                `)
+                .in('note_id', notes.map((n: any) => n.id))
+                .order('z_index', { ascending: true });
+              topicNotes = noteElements || [];
+            }
+          } catch {}
+          const topicNorm = this.normalizeTopicForResponse(topic);
+          return {
+            valid: true,
+            message: 'Class code verified successfully',
+            course_level_id: courseLevelId,
+            topic_id: selfResult.topic_id,
+            topic: topicNorm,
+            topic_notes: topicNotes,
+          };
+        }
+        return {
+          valid: false,
+          message: 'This self-study code is for a different course level. Enter it on the correct level.',
+        };
+      }
       return {
         valid: false,
-        message: 'Invalid or expired class code',
+        message: selfResult.message || 'Invalid or expired class code',
       };
     }
 

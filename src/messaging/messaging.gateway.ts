@@ -148,6 +148,10 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     this.server.to(`conv:${conversationId}`).emit('message:read', { messageId, readAt });
   }
 
+  emitMessageUpdated(conversationId: string, message: { id: string; content: string }) {
+    this.server.to(`conv:${conversationId}`).emit('message:updated', message);
+  }
+
   async getPresence(userType: string, userId: string) {
     return this.presenceService.getPresenceWithDb(userType as any, userId);
   }

@@ -27,6 +27,7 @@ export class MessagingService {
   private async getParticipantName(type: ParticipantType, id: string): Promise<string> {
     if (type === 'admin') {
       const { data } = await this.supabase.from('admins').select('email').eq('id', id).single();
+      if (data?.email === 'classcode@system') return 'Class Code';
       return data?.email || 'Admin';
     }
     if (type === 'tutor') {
@@ -179,15 +180,33 @@ export class MessagingService {
 
     const convIds = convs.map((c) => c.id);
     const unreadByConv = new Map<string, number>();
+    const lastMessageByConv = new Map<string, string>();
     if (convIds.length > 0) {
-      const { data: unreadMsgs } = await this.supabase
-        .from('messages')
-        .select('conversation_id')
-        .in('conversation_id', convIds)
-        .is('read_at', null)
-        .or(`sender_type.neq.${userRole},sender_id.neq.${userId}`);
-      for (const m of unreadMsgs || []) {
+      const [unreadRes, lastMsgRes] = await Promise.all([
+        this.supabase
+          .from('messages')
+          .select('conversation_id')
+          .in('conversation_id', convIds)
+          .is('read_at', null)
+          .or(`sender_type.neq.${userRole},sender_id.neq.${userId}`),
+        this.supabase
+          .from('messages')
+          .select('conversation_id, content, attachment_url')
+          .in('conversation_id', convIds)
+          .order('created_at', { ascending: false }),
+      ]);
+      for (const m of unreadRes.data || []) {
         unreadByConv.set(m.conversation_id, (unreadByConv.get(m.conversation_id) || 0) + 1);
+      }
+      const seenConv = new Set<string>();
+      for (const m of lastMsgRes.data || []) {
+        if (!seenConv.has(m.conversation_id)) {
+          seenConv.add(m.conversation_id);
+          lastMessageByConv.set(
+            m.conversation_id,
+            m.content || (m.attachment_url ? '📎 Attachment' : ''),
+          );
+        }
       }
     }
 
@@ -207,6 +226,7 @@ export class MessagingService {
         other_participant_name: 'Unknown',
         last_message_at: c.last_message_at,
         unread_count: unreadByConv.get(c.id) || 0,
+        last_message_preview: lastMessageByConv.get(c.id) || null,
       };
       if (otherType === 'admin') {
         const a = adminMap.get(otherId);
@@ -352,6 +372,27 @@ export class MessagingService {
       // WebSocket emit may fail if no clients connected
     }
     return msg;
+  }
+
+  /** Update message content (e.g. when self-class-code expires) */
+  async updateMessageContent(
+    messageId: string,
+    conversationId: string,
+    newContent: string,
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from('messages')
+      .update({ content: newContent })
+      .eq('id', messageId)
+      .eq('conversation_id', conversationId);
+
+    if (error) return;
+
+    try {
+      this.gateway.emitMessageUpdated(conversationId, { id: messageId, content: newContent });
+    } catch (e) {
+      /* ignore */
+    }
   }
 
   async markMessageRead(
@@ -571,7 +612,17 @@ export class MessagingService {
   async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }>> {
     const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }> = [];
 
-    // Admin: prefer admin@example.com, fallback to first admin
+    // Class Code: always first for all students (self-study class code requests)
+    const { data: classCodeAdmin } = await this.supabase
+      .from('admins')
+      .select('id, email')
+      .eq('email', 'classcode@system')
+      .maybeSingle();
+    if (classCodeAdmin) {
+      contacts.push({ type: 'admin', id: classCodeAdmin.id, name: 'Class Code' });
+    }
+
+    // Admin: prefer admin@example.com, fallback to first admin (exclude classcode@system)
     let admin: { id: string; email: string } | null = null;
     const { data: superAdmin } = await this.supabase
       .from('admins')
@@ -580,7 +631,11 @@ export class MessagingService {
       .maybeSingle();
     if (superAdmin) admin = superAdmin;
     else {
-      const { data: first } = await this.supabase.from('admins').select('id, email').limit(1);
+      const { data: first } = await this.supabase
+        .from('admins')
+        .select('id, email')
+        .neq('email', 'classcode@system')
+        .limit(1);
       if (first?.length) admin = first[0];
     }
     if (admin) {
