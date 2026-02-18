@@ -120,9 +120,6 @@ export class AuthService {
 
   // ============ STUDENT LOGIN & PROFILE ============
   async studentLogin(username: string, password: string) {
-    this.logger.log(`=== STUDENT LOGIN ATTEMPT ===`);
-    this.logger.log(`Username: ${username}`);
-
     try {
       // Check rate limiting
       const rateLimitKey = `login:student:${username}`;
@@ -154,7 +151,6 @@ export class AuthService {
 
       // If not cached, fetch from database
       if (!student) {
-        this.logger.log(`Querying database for student...`);
         const { data: studentData, error } = await this.supabase
           .from('students')
           .select('id, username, password_hash, first_name, last_name, status, class_id, school_id, login_count, last_login')
@@ -180,11 +176,7 @@ export class AuthService {
         throw new UnauthorizedException('Your account is not active. Please contact your administrator.');
       }
 
-      this.logger.log(`Student found: ${student.username}, ID: ${student.id}`);
-      this.logger.log(`Password hash from DB (first 20 chars): ${student.password_hash?.substring(0, 20)}...`);
-
       // Verify password
-      this.logger.log(`Comparing passwords...`);
       const isPasswordValid = await bcrypt.compare(password, student.password_hash);
       
       if (!isPasswordValid) {
@@ -237,8 +229,6 @@ export class AuthService {
       };
       await this.cacheService.set(`user:student:${student.id}:meta`, userMeta, 900, 'auth'); // 15 min TTL
       await this.cacheService.set(cachedUserKey, { id: student.id, username: student.username }, 900, 'auth');
-
-      this.logger.log(`✅ Successful login for student: ${username}`);
 
       return {
         token,

@@ -755,17 +755,6 @@ export class StudentCoursesService {
       throw new NotFoundException('Topic not found');
     }
 
-    // Log the editor access (you can create a table for this or use existing logging mechanism)
-    // For now, we'll just return success - you can extend this to store in a database table
-    console.log('Editor access recorded:', {
-      studentId,
-      username,
-      courseId,
-      topicId,
-      editorType,
-      timestamp: new Date().toISOString(),
-    });
-
     return {
       success: true,
       message: 'Editor access recorded successfully',
@@ -949,19 +938,6 @@ export class StudentCoursesService {
       is_autosaved?: boolean;
     },
   ): Promise<any> {
-    console.log('Saving project:', {
-      studentId,
-      projectId: projectData.project_id,
-      topicId: projectData.topic_id,
-      courseId: projectData.course_id,
-      levelId: projectData.course_level_id,
-      projectName: projectData.project_name,
-      hasProjectData: !!projectData.project_data,
-      projectDataType: typeof projectData.project_data,
-      projectDataKeys: projectData.project_data ? Object.keys(projectData.project_data) : [],
-      sb3Base64Length: projectData.project_data?.sb3Base64 ? projectData.project_data.sb3Base64.length : 0,
-    });
-
     // Verify student exists
     const { data: student, error: studentError } = await this.supabase
       .from('students')
@@ -970,7 +946,6 @@ export class StudentCoursesService {
       .single();
 
     if (studentError || !student) {
-      console.error('Student lookup error:', studentError);
       throw new NotFoundException(`Student not found: ${studentId}`);
     }
 
@@ -981,27 +956,16 @@ export class StudentCoursesService {
       .eq('id', projectData.topic_id);
 
     if (topicError) {
-      console.error('Topic lookup error:', topicError);
       throw new NotFoundException(`Topic lookup failed: ${topicError.message}`);
     }
     
     if (!topics || topics.length === 0) {
-      console.error(`Topic not found with ID: ${projectData.topic_id}`);
-      // Try to find similar topics for debugging
-      const { data: allTopics } = await this.supabase
-        .from('topics')
-        .select('id, name')
-        .limit(5);
-      console.log('Sample topics in database:', allTopics);
       throw new NotFoundException(`Topic not found with ID: ${projectData.topic_id}`);
     }
     
     const topic = topics[0];
     
-    // Check if topic is active
-    if (topic.status && topic.status !== 'active') {
-      console.warn(`Topic ${projectData.topic_id} is not active (status: ${topic.status})`);
-    }
+    // Check if topic is active (skip logging to avoid save hangs)
 
     // Calculate file size
     let fileSizeBytes = 0;
@@ -1101,7 +1065,6 @@ export class StudentCoursesService {
         throw new BadRequestException(`Failed to update project: ${updateError.message}`);
       }
 
-      console.log('Updated existing project:', updatedProject.id);
       return updatedProject;
     }
 
@@ -1157,13 +1120,10 @@ export class StudentCoursesService {
       throw new BadRequestException(`Failed to save project: ${saveError.message}`);
     }
 
-    console.log('Created new project version:', savedProject.id, 'version:', version);
     return savedProject;
   }
 
   async getStudentProject(studentId: string, projectId: string): Promise<any> {
-    console.log('Getting project:', { studentId, projectId });
-    
     // Get project and verify it belongs to the student
     const { data: projects, error: projectError } = await this.supabase
       .from('student_saved_projects')
@@ -1227,13 +1187,6 @@ export class StudentCoursesService {
       // project_data is already a JSON object, no need to parse
       // But if it has sb3Base64, we keep it as is for the frontend
     }
-
-    console.log('Project retrieved successfully:', {
-      id: project.id,
-      projectName: project.project_name,
-      hasProjectData: !!project.project_data,
-      projectType: project.project_type
-    });
 
     return project;
   }

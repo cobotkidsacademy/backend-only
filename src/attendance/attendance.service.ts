@@ -31,7 +31,7 @@ export class AttendanceService {
     const loginTime = new Date(login_timestamp);
     const attendanceDate = this.formatDate(loginTime);
 
-    this.logger.log(`Attempting to auto-mark attendance for student ${student_id} on ${attendanceDate}`);
+    this.logger.debug(`Attempting to auto-mark attendance for student ${student_id} on ${attendanceDate}`);
 
     // Get student's class
     const { data: student, error: studentError } = await this.supabase
@@ -61,7 +61,7 @@ export class AttendanceService {
 
     if (existingToday) {
       // Already marked for today, update login timestamp if needed
-      this.logger.log(`Attendance already marked for student ${student_id} on ${attendanceDate}, updating login timestamp`);
+      this.logger.debug(`Attendance already marked for student ${student_id} on ${attendanceDate}, updating login timestamp`);
       await this.supabase
         .from('attendance_records')
         .update({ login_timestamp: login_timestamp })
@@ -93,7 +93,7 @@ export class AttendanceService {
 
       if (daysSinceLastAttendance < 7) {
         // Less than 7 days since last attendance - don't mark again
-        this.logger.log(
+        this.logger.debug(
           `Attendance not marked: Only ${daysSinceLastAttendance} days since last attendance (requires 7 days)`
         );
         return null;
@@ -143,11 +143,11 @@ export class AttendanceService {
               const minutesLate = Math.floor((loginTime.getTime() - classStartTime.getTime()) / (1000 * 60));
               if (minutesLate > 15) { // More than 15 minutes late
                 attendanceStatus = 'late';
-                this.logger.log(`Student ${student_id} logged in ${minutesLate} minutes after class start time`);
+                this.logger.debug(`Student ${student_id} logged in ${minutesLate} minutes after class start time`);
               }
             }
           } else {
-            this.logger.log(
+            this.logger.debug(
               `Student ${student_id} login time ${loginTime.toISOString()} is outside schedule window ` +
               `(${scheduleStartWindow.toISOString()} to ${scheduleEndWindow.toISOString()})`
             );
@@ -157,17 +157,17 @@ export class AttendanceService {
       }
 
       if (!matchingSchedule) {
-        this.logger.log(`No schedule found for ${dayOfWeek} for class ${student.class_id}, marking as present anyway`);
+        this.logger.debug(`No schedule found for ${dayOfWeek} for class ${student.class_id}, marking as present anyway`);
         isWithinScheduleWindow = true; // Allow marking if no schedule found
       } else if (!isWithinScheduleWindow) {
         // Schedule exists but login time is outside window - don't mark attendance
-        this.logger.log(
+        this.logger.debug(
           `Attendance not marked: Student ${student_id} login time is outside schedule window for ${dayOfWeek}`
         );
         return null;
       }
     } else {
-      this.logger.log(`No active schedules found for class ${student.class_id}, marking attendance anyway`);
+      this.logger.debug(`No active schedules found for class ${student.class_id}, marking attendance anyway`);
       isWithinScheduleWindow = true; // Allow marking if no schedule found
     }
 
@@ -200,7 +200,7 @@ export class AttendanceService {
       return null;
     }
 
-    this.logger.log(`✅ Auto-marked attendance for student ${student_id} on ${attendanceDate} with status: ${attendanceStatus}`);
+    this.logger.debug(`Auto-marked attendance for student ${student_id} on ${attendanceDate} with status: ${attendanceStatus}`);
     return attendance as AttendanceRecord;
   }
 

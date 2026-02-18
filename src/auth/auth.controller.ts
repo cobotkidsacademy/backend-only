@@ -50,7 +50,6 @@ export class AuthController {
   @Post('student/login')
   @HttpCode(HttpStatus.OK)
   async studentLogin(@Body() loginDto: StudentLoginDto) {
-    this.logger.log(`Student login request received for: ${loginDto.username}`);
     return this.authService.studentLogin(loginDto.username, loginDto.password);
   }
 
