@@ -10,6 +10,7 @@ import {
   Logger,
   Query,
   Put,
+  Patch,
   Param,
   UnauthorizedException,
   Delete,
@@ -131,6 +132,18 @@ export class AuthController {
   @Get('tutor/me')
   async getTutorInfo(@Request() req) {
     return this.authService.getTutorInfo(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('tutor/me')
+  async updateTutorDisplayClassName(@Request() req, @Body() dto: { display_class_name?: string | null }) {
+    if (req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only tutors can update this');
+    }
+    return this.authService.updateTutorDisplayClassName(
+      req.user.sub,
+      dto.display_class_name ?? null,
+    );
   }
 
   @UseGuards(JwtAuthGuard)

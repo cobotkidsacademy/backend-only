@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef, ServiceUnavailableException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
@@ -774,7 +774,8 @@ export class AuthService {
         level,
         phone,
         status,
-        profile_image_url
+        profile_image_url,
+        display_class_name
       `)
       .eq('id', tutorId)
       .single();
@@ -784,6 +785,18 @@ export class AuthService {
     }
 
     return tutor;
+  }
+
+  async updateTutorDisplayClassName(tutorId: string, displayClassName: string | null) {
+    const { data, error } = await this.supabase
+      .from('tutors')
+      .update({ display_class_name: displayClassName ? displayClassName.trim() || null : null })
+      .eq('id', tutorId)
+      .select()
+      .single();
+
+    if (error) throw new UnauthorizedException('Failed to update');
+    return data;
   }
 
   // ============ PARENT LOGIN & PROFILE ============
@@ -1267,49 +1280,78 @@ export class AuthService {
     }
   }
 
+  private isNetworkError(err: any): boolean {
+    const msg = err?.message?.toLowerCase?.() ?? '';
+    return msg.includes('fetch failed') || msg.includes('network') || msg.includes('econnrefused') || err?.name === 'TypeError';
+  }
+
   async getSchoolInfo(schoolId: string) {
-    const { data: school, error: schoolError } = await this.supabase
-      .from('schools')
-      .select(`
-        id,
-        name,
-        code,
-        email,
-        auto_email,
-        location,
-        phone,
-        status,
-        logo_url,
-        created_at,
-        updated_at
-      `)
-      .eq('id', schoolId)
-      .single();
+    let school: any;
+    let schoolError: any;
+    try {
+      const res = await this.supabase
+        .from('schools')
+        .select(`
+          id,
+          name,
+          code,
+          email,
+          auto_email,
+          location,
+          phone,
+          status,
+          logo_url,
+          created_at,
+          updated_at
+        `)
+        .eq('id', schoolId)
+        .single();
+      school = res.data;
+      schoolError = res.error;
+    } catch (err: any) {
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
+    }
 
     if (schoolError || !school) {
+      if (schoolError && this.isNetworkError(schoolError)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
       throw new UnauthorizedException('School not found');
     }
 
     // Fetch classes with student counts
-    const { data: classes } = await this.supabase
-      .from('classes')
-      .select(`
-        id,
-        name,
-        level,
-        description,
-        status,
-        students:students(count)
-      `)
-      .eq('school_id', schoolId)
-      .eq('status', 'active');
+    let classes: any[] = [];
+    let totalStudentsCount: number | null = null;
+    try {
+      const { data: classesData } = await this.supabase
+        .from('classes')
+        .select(`
+          id,
+          name,
+          level,
+          description,
+          status,
+          students:students(count)
+        `)
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      classes = classesData ?? [];
 
-    // Fetch total student count
-    const { data: students } = await this.supabase
-      .from('students')
-      .select('id', { count: 'exact', head: true })
-      .eq('school_id', schoolId)
-      .eq('status', 'active');
+      const { count } = await this.supabase
+        .from('students')
+        .select('*', { count: 'exact', head: true })
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      totalStudentsCount = count ?? 0;
+    } catch (err: any) {
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
+    }
 
     const classList = (classes || []).map((cls: any) => ({
       id: cls.id,
@@ -1320,11 +1362,49 @@ export class AuthService {
       student_count: cls.students?.[0]?.count || 0,
     }));
 
+    // Overall school performance: mean of best quiz % of all students who have done quizzes
+    let overall_performance_rating: string | null = null;
+    let overall_average_percentage: number = 0;
+    try {
+      const { data: schoolStudents } = await this.supabase
+        .from('students')
+        .select('id')
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      const studentIds = (schoolStudents || []).map((s: any) => s.id);
+      if (studentIds.length > 0) {
+        const { data: attempts } = await this.supabase
+          .from('student_quiz_attempts')
+          .select('student_id, percentage')
+          .in('student_id', studentIds)
+          .eq('status', 'completed');
+        const bestPctByStudent: Record<string, number> = {};
+        (attempts || []).forEach((a: any) => {
+          const current = bestPctByStudent[a.student_id] ?? 0;
+          const pct = typeof a.percentage === 'number' ? a.percentage : parseFloat(String(a.percentage ?? 0)) || 0;
+          if (pct > current) bestPctByStudent[a.student_id] = pct;
+        });
+        const percentages = Object.values(bestPctByStudent).filter((p) => p > 0);
+        if (percentages.length > 0) {
+          const mean = percentages.reduce((sum, p) => sum + p, 0) / percentages.length;
+          overall_average_percentage = Math.round(mean * 100) / 100;
+          if (mean <= 25) overall_performance_rating = 'below_expectation';
+          else if (mean <= 50) overall_performance_rating = 'approaching';
+          else if (mean <= 75) overall_performance_rating = 'meeting';
+          else overall_performance_rating = 'exceeding';
+        }
+      }
+    } catch {
+      // leave overall as null/0 on error
+    }
+
     return {
       ...school,
       classes: classList,
-      total_students: students?.length || 0,
+      total_students: totalStudentsCount ?? 0,
       total_classes: classList.length,
+      overall_performance_rating,
+      overall_average_percentage,
     };
   }
 

@@ -51,7 +51,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       const payload = this.jwtService.verify(token, { secret });
       const role = payload.role;
       const userId = payload.sub;
-      if (!['admin', 'tutor', 'student'].includes(role)) {
+      if (!['admin', 'tutor', 'student', 'school'].includes(role)) {
         client.emit('error', { message: 'Invalid role' });
         return;
       }

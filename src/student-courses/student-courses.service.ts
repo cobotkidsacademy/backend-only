@@ -936,6 +936,7 @@ export class StudentCoursesService {
       project_type?: string;
       file_format?: string;
       is_autosaved?: boolean;
+      team_member_ids?: string[];
     },
   ): Promise<any> {
     // Verify student exists
@@ -1118,6 +1119,53 @@ export class StudentCoursesService {
 
     if (saveError) {
       throw new BadRequestException(`Failed to save project: ${saveError.message}`);
+    }
+
+    // Save to team members' accounts (same class verification)
+    const teamIds = projectData.team_member_ids || [];
+    if (teamIds.length > 0) {
+      const { data: hostStudent } = await this.supabase
+        .from('students')
+        .select('class_id')
+        .eq('id', studentId)
+        .single();
+
+      if (hostStudent?.class_id) {
+        const { data: sameClassTeammates } = await this.supabase
+          .from('students')
+          .select('id')
+          .in('id', teamIds)
+          .eq('class_id', hostStudent.class_id);
+
+        const validTeammateIds = (sameClassTeammates || [])
+          .map((s: { id: string }) => s.id)
+          .filter((id) => id !== studentId);
+
+        const projectPayload = {
+          topic_id: projectData.topic_id,
+          course_level_id: projectData.course_level_id,
+          course_id: projectData.course_id,
+          project_name: projectData.project_name,
+          project_title: projectData.project_title || projectData.project_name,
+          editor_type: projectData.editor_type || 'inter',
+          editor_url: projectData.editor_url || '',
+          project_data: projectData.project_data || null,
+          project_html: projectData.project_html || null,
+          project_code: projectData.project_code || null,
+          project_files: projectData.project_files,
+          project_type: projectData.project_type || 'scratch',
+          file_format: projectData.file_format || 'sb3',
+          is_autosaved: projectData.is_autosaved || false,
+        };
+
+        for (const teammateId of validTeammateIds) {
+          try {
+            await this.saveStudentProject(teammateId, projectPayload);
+          } catch {
+            // Skip teammate if save fails (don't block host response)
+          }
+        }
+      }
     }
 
     return savedProject;

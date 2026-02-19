@@ -108,6 +108,7 @@ export class StudentCoursesController {
       project_type?: string;
       file_format?: string;
       is_autosaved?: boolean;
+      team_member_ids?: string[]; // Teammate student IDs – save to each account when team-up active
     },
   ) {
     return this.studentCoursesService.saveStudentProject(req.user.sub, body);

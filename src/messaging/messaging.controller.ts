@@ -18,7 +18,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { MessagingService } from './messaging.service';
-import { PresenceService } from './presence.service';
+import { PresenceService, ParticipantType } from './presence.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { MarkReadDto } from './dto/mark-read.dto';
@@ -32,12 +32,11 @@ export class MessagingController {
     private readonly configService: ConfigService,
   ) {}
 
-  private getUser(req: any): { role: 'admin' | 'tutor' | 'student'; id: string } {
+  private getUser(req: any): { role: 'admin' | 'tutor' | 'student' | 'school'; id: string } {
     const role = req.user?.role;
-    if (!['admin', 'tutor', 'student'].includes(role)) {
-      throw new UnauthorizedException('Only admin, tutor, or student can use messaging');
+    if (!['admin', 'tutor', 'student', 'school'].includes(role)) {
+      throw new UnauthorizedException('Only admin, tutor, student, or school can use messaging');
     }
-    // Admin validateUser returns { id, email, role }; student/tutor use sub from JWT payload
     const id = req.user?.sub ?? req.user?.id;
     if (!id) throw new UnauthorizedException('User ID missing');
     return { role, id };
@@ -127,6 +126,7 @@ export class MessagingController {
     const { role, id } = this.getUser(req);
     if (role === 'student') return this.messagingService.getStudentContacts(id);
     if (role === 'tutor') return this.messagingService.getTutorContacts(id);
+    if (role === 'school') return this.messagingService.getSchoolContacts(id);
     return this.messagingService.getAdminContacts();
   }
 
@@ -143,10 +143,10 @@ export class MessagingController {
 
   @Get('presence/:userType/:userId')
   async getPresence(
-    @Param('userType') userType: 'admin' | 'tutor' | 'student',
+    @Param('userType') userType: ParticipantType,
     @Param('userId') userId: string,
   ) {
-    return this.presenceService.getPresenceWithDb(userType, userId);
+    return this.presenceService.getPresenceWithDb(userType as ParticipantType, userId);
   }
 
   @Get('search/tutors')

@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, UnauthorizedException, forwardRef, Injec
 import { SupabaseClient } from '@supabase/supabase-js';
 import { MessagingGateway } from './messaging.gateway';
 
-export type ParticipantType = 'admin' | 'tutor' | 'student';
+export type ParticipantType = 'admin' | 'tutor' | 'student' | 'school';
 
 @Injectable()
 export class MessagingService {
@@ -17,8 +17,11 @@ export class MessagingService {
     typeB: ParticipantType,
     idB: string,
   ): { aType: ParticipantType; aId: string; bType: ParticipantType; bId: string } {
-    const order = (t: ParticipantType) => (t === 'admin' ? 0 : t === 'student' ? 1 : 2);
-    if (order(typeA) < order(typeB) || (order(typeA) === order(typeB) && idA < idB)) {
+    const order = (t: ParticipantType) =>
+      t === 'admin' ? 0 : t === 'school' ? 1 : t === 'student' ? 2 : 3;
+    const normA = (idA || '').toLowerCase();
+    const normB = (idB || '').toLowerCase();
+    if (order(typeA) < order(typeB) || (order(typeA) === order(typeB) && normA < normB)) {
       return { aType: typeA, aId: idA, bType: typeB, bId: idB };
     }
     return { aType: typeB, aId: idB, bType: typeA, bId: idA };
@@ -29,6 +32,10 @@ export class MessagingService {
       const { data } = await this.supabase.from('admins').select('email').eq('id', id).single();
       if (data?.email === 'classcode@system') return 'Class Code';
       return data?.email || 'Admin';
+    }
+    if (type === 'school') {
+      const { data } = await this.supabase.from('schools').select('name').eq('id', id).single();
+      return data?.name || 'School';
     }
     if (type === 'tutor') {
       const { data } = await this.supabase
@@ -74,15 +81,17 @@ export class MessagingService {
   private async getTutorParticipantDetails(tutorId: string): Promise<{
     profile_image_url: string | null;
     first_name: string;
+    display_class_name?: string;
   }> {
     const { data } = await this.supabase
       .from('tutors')
-      .select('profile_image_url, first_name')
+      .select('profile_image_url, first_name, display_class_name')
       .eq('id', tutorId)
       .single();
     return {
       profile_image_url: (data as any)?.profile_image_url ?? null,
       first_name: (data as any)?.first_name ?? '',
+      display_class_name: (data as any)?.display_class_name ?? undefined,
     };
   }
 
@@ -116,10 +125,11 @@ export class MessagingService {
     });
     convs.sort((a, b) => new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime());
 
-    const byType: { admin: string[]; tutor: string[]; student: string[] } = {
+    const byType: { admin: string[]; tutor: string[]; student: string[]; school: string[] } = {
       admin: [],
       tutor: [],
       student: [],
+      school: [],
     };
     for (const c of convs) {
       let isA = c.participant_a_type === userRole && this.sameId(c.participant_a_id, userId);
@@ -130,16 +140,16 @@ export class MessagingService {
         otherType = isA ? c.participant_b_type : c.participant_a_type;
         otherId = isA ? c.participant_b_id : c.participant_a_id;
       }
-      if (otherId && byType[otherType]) byType[otherType].push(otherId);
+      if (otherId && (byType as any)[otherType]) (byType as any)[otherType].push(otherId);
     }
     const unique = (arr: string[]) => [...new Set(arr)];
 
-    const [adminsData, tutorsData, studentsData] = await Promise.all([
+    const [adminsData, tutorsData, studentsData, schoolsData] = await Promise.all([
       byType.admin.length
         ? this.supabase.from('admins').select('id, email').in('id', unique(byType.admin))
         : Promise.resolve({ data: [] }),
       byType.tutor.length
-        ? this.supabase.from('tutors').select('id, first_name, last_name, profile_image_url').in('id', unique(byType.tutor))
+        ? this.supabase.from('tutors').select('id, first_name, last_name, profile_image_url, display_class_name').in('id', unique(byType.tutor))
         : Promise.resolve({ data: [] }),
       byType.student.length
         ? this.supabase
@@ -147,21 +157,57 @@ export class MessagingService {
             .select('id, first_name, last_name, username, profile_image_url, classes(name, schools(name))')
             .in('id', unique(byType.student))
         : Promise.resolve({ data: [] }),
+      byType.school.length
+        ? this.supabase.from('schools').select('id, name').in('id', unique(byType.school))
+        : Promise.resolve({ data: [] }),
     ]);
 
     const adminMap = new Map<string, { name: string }>();
     (adminsData.data || []).forEach((a: any) => adminMap.set(a.id, { name: a.email || 'Admin' }));
+    const schoolMap = new Map<string, { name: string }>();
+    (schoolsData.data || []).forEach((s: any) => schoolMap.set(s.id, { name: s.name || 'School' }));
     const tutorMap = new Map<
       string,
-      { name: string; profile_image_url: string | null; first_name: string }
+      { name: string; profile_image_url: string | null; first_name: string; class_name?: string }
     >();
-    (tutorsData.data || []).forEach((t: any) =>
+    const tutorClassMap = new Map<string, string>();
+    if (byType.tutor.length > 0 && userRole === 'school') {
+      const { data: classRows } = await this.supabase
+        .from('classes')
+        .select('id')
+        .eq('school_id', userId);
+      const classIds = (classRows || []).map((c: any) => c.id);
+      if (classIds.length > 0) {
+        const { data: asn } = await this.supabase
+          .from('tutor_class_assignments')
+          .select('tutor_id, class:classes(name)')
+          .in('tutor_id', unique(byType.tutor))
+          .in('class_id', classIds)
+          .eq('status', 'active');
+        for (const a of asn || []) {
+          const tutorId = (a as any).tutor_id;
+          const className = (a as any).class?.name;
+          if (tutorId && className) {
+            const existing = tutorClassMap.get(tutorId) || '';
+            const parts = existing ? existing.split(', ') : [];
+            if (!parts.includes(className)) parts.push(className);
+            tutorClassMap.set(tutorId, parts.join(', '));
+          }
+        }
+      }
+    }
+    (tutorsData.data || []).forEach((t: any) => {
+      const class_name = userRole === 'school' ? (tutorClassMap.get(t.id) || undefined) : undefined;
+      const fullName = `${t.first_name || ''} ${t.last_name || ''}`.trim() || 'Tutor';
+      const displayName = (t.display_class_name || '').trim();
+      const name = userRole === 'student' && displayName ? displayName : fullName;
       tutorMap.set(t.id, {
-        name: `${t.first_name || ''} ${t.last_name || ''}`.trim() || 'Tutor',
+        name,
         profile_image_url: t.profile_image_url ?? null,
         first_name: t.first_name || '',
-      }),
-    );
+        class_name: class_name || undefined,
+      });
+    });
     const studentMap = new Map<
       string,
       { name: string; school_name: string; class_name: string; profile_image_url: string | null; first_name: string; username: string }
@@ -232,6 +278,10 @@ export class MessagingService {
         const a = adminMap.get(otherId);
         return { ...base, other_participant_name: a?.name ?? 'Admin' };
       }
+      if (otherType === 'school') {
+        const s = schoolMap.get(otherId);
+        return { ...base, other_participant_name: s?.name ?? 'School' };
+      }
       if (otherType === 'tutor') {
         const t = tutorMap.get(otherId);
         return t
@@ -240,6 +290,7 @@ export class MessagingService {
               other_participant_name: t.name,
               other_profile_image_url: t.profile_image_url,
               other_first_name: t.first_name,
+              ...(t.class_name ? { other_class_name: t.class_name } : {}),
             }
           : base;
       }
@@ -283,10 +334,52 @@ export class MessagingService {
       otherType = isA ? conv.participant_b_type : conv.participant_a_type;
       otherId = isA ? conv.participant_b_id : conv.participant_a_id;
     }
-    const otherName = await this.getParticipantName(otherType, otherId);
+    const [otherName, detailsResult, msgsRes] = await Promise.all([
+      this.getParticipantName(otherType, otherId),
+      otherType === 'student'
+        ? this.getStudentDetails(otherId)
+        : otherType === 'tutor'
+          ? (async () => {
+              const d = await this.getTutorParticipantDetails(otherId);
+              const assign: Record<string, unknown> = {
+                other_profile_image_url: d.profile_image_url,
+                other_first_name: d.first_name,
+              };
+      if (userRole === 'student' && d.display_class_name?.trim()) {
+        assign.other_display_class_name = d.display_class_name.trim();
+      }
+      if (userRole === 'school') {
+        const { data: classRows } = await this.supabase
+          .from('classes')
+          .select('id')
+          .eq('school_id', userId);
+        const classIds = (classRows || []).map((c: any) => c.id);
+        if (classIds.length > 0) {
+          const { data: asn } = await this.supabase
+            .from('tutor_class_assignments')
+            .select('class:classes(name)')
+            .eq('tutor_id', otherId)
+            .in('class_id', classIds)
+            .eq('status', 'active');
+          const classNames = [...new Set((asn || []).map((a: any) => a?.class?.name).filter(Boolean))];
+          if (classNames.length > 0) assign.other_class_name = classNames.join(', ');
+        }
+      }
+              return assign;
+            })()
+          : Promise.resolve({}),
+      this.supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true }),
+    ]);
+    const msgs = msgsRes?.data || [];
+
     const extra: Record<string, unknown> = {};
-    if (otherType === 'student') {
-      const d = await this.getStudentDetails(otherId);
+    let finalName = otherName;
+    if (otherType === 'student' && detailsResult) {
+      const d = detailsResult as { school_name: string; class_name: string; profile_image_url: string | null; first_name: string; username: string };
       Object.assign(extra, {
         other_school_name: d.school_name,
         other_class_name: d.class_name,
@@ -294,25 +387,19 @@ export class MessagingService {
         other_first_name: d.first_name,
         other_username: d.username,
       });
-    } else if (otherType === 'tutor') {
-      const d = await this.getTutorParticipantDetails(otherId);
-      Object.assign(extra, {
-        other_profile_image_url: d.profile_image_url,
-        other_first_name: d.first_name,
-      });
+    } else if (otherType === 'tutor' && detailsResult) {
+      Object.assign(extra, detailsResult);
+      if (userRole === 'student' && (detailsResult as any).other_display_class_name) {
+        finalName = (detailsResult as any).other_display_class_name;
+        delete (extra as any).other_display_class_name;
+      }
     }
-
-    const { data: msgs } = await this.supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true });
 
     return {
       id: conv.id,
       other_participant_type: otherType,
       other_participant_id: otherId,
-      other_participant_name: otherName,
+      other_participant_name: finalName,
       messages: msgs || [],
       ...extra,
     };
@@ -599,18 +686,18 @@ export class MessagingService {
         `first_name.ilike.%${trimmed}%,last_name.ilike.%${trimmed}%,email.ilike.%${trimmed}%`,
       )
       .limit(20);
-    return (data || []).map((t) => ({
+    return (data || []).map((t: any) => ({
       id: t.id,
       name: `${t.first_name} ${t.last_name}`.trim(),
-      first_name: (t as any).first_name,
-      email: (t as any).email,
-      profile_image_url: (t as any).profile_image_url ?? null,
+      first_name: t.first_name,
+      email: t.email,
+      profile_image_url: t.profile_image_url ?? null,
       type: 'tutor' as const,
     }));
   }
 
-  async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }>> {
-    const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null }> = [];
+  async getStudentContacts(studentId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null; class_name?: string }>> {
+    const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null; class_name?: string }> = [];
 
     // Class Code: always first for all students (self-study class code requests)
     const { data: classCodeAdmin } = await this.supabase
@@ -651,18 +738,21 @@ export class MessagingService {
     if (student?.class_id) {
       const { data: assignments } = await this.supabase
         .from('tutor_class_assignments')
-        .select('tutor:tutors(id, first_name, last_name, profile_image_url)')
+        .select('tutor:tutors(id, first_name, last_name, profile_image_url, display_class_name)')
         .eq('class_id', student.class_id)
         .eq('status', 'active');
       for (const a of assignments || []) {
         const t = (a as any).tutor;
         if (t) {
+          const displayName = (t.display_class_name || '').trim();
+          const fullName = `${t.first_name} ${t.last_name}`.trim();
           contacts.push({
             type: 'tutor',
             id: t.id,
-            name: `${t.first_name} ${t.last_name}`.trim(),
+            name: displayName || fullName,
             first_name: t.first_name,
             profile_image_url: t.profile_image_url ?? null,
+            class_name: displayName ? fullName : undefined,
           });
         }
       }
@@ -683,5 +773,67 @@ export class MessagingService {
 
   async getAdminContacts(): Promise<Array<{ type: ParticipantType; id: string; name: string }>> {
     return [];
+  }
+
+  /** Contacts for school: Office Admin (admin@example.com) + all assigned tutors (lead & assistant) for all classes */
+  async getSchoolContacts(schoolId: string): Promise<Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null; class_name?: string }>> {
+    const contacts: Array<{ type: ParticipantType; id: string; name: string; first_name?: string; profile_image_url?: string | null; class_name?: string }> = [];
+
+    const { data: superAdmin } = await this.supabase
+      .from('admins')
+      .select('id, email')
+      .eq('email', 'admin@example.com')
+      .maybeSingle();
+    if (superAdmin) {
+      contacts.push({
+        type: 'admin',
+        id: superAdmin.id,
+        name: 'Office Admin (admin@example.com)',
+      });
+    }
+
+    const { data: classRows } = await this.supabase
+      .from('classes')
+      .select('id')
+      .eq('school_id', schoolId);
+    const classIds = (classRows || []).map((c: any) => c.id);
+    if (classIds.length === 0) return contacts;
+
+    const { data: assignments } = await this.supabase
+      .from('tutor_class_assignments')
+      .select('tutor_id, class:classes(name)')
+      .in('class_id', classIds)
+      .eq('status', 'active');
+    const tutorIds = [...new Set((assignments || []).map((a: any) => a.tutor_id).filter(Boolean))];
+    if (tutorIds.length === 0) return contacts;
+
+    const classesByTutor = new Map<string, string[]>();
+    for (const a of assignments || []) {
+      const tutorId = (a as any).tutor_id;
+      const className = (a as any).class?.name;
+      if (tutorId && className) {
+        const list = classesByTutor.get(tutorId) || [];
+        if (!list.includes(className)) list.push(className);
+        classesByTutor.set(tutorId, list);
+      }
+    }
+
+    const { data: tutors } = await this.supabase
+      .from('tutors')
+      .select('id, first_name, last_name, profile_image_url')
+      .in('id', tutorIds);
+    for (const t of tutors || []) {
+      const tutorName = `${(t as any).first_name || ''} ${(t as any).last_name || ''}`.trim() || 'Tutor';
+      const classNames = classesByTutor.get((t as any).id) || [];
+      contacts.push({
+        type: 'tutor',
+        id: t.id,
+        name: tutorName,
+        class_name: classNames.length > 0 ? classNames.join(', ') : undefined,
+        first_name: (t as any).first_name,
+        profile_image_url: (t as any).profile_image_url ?? null,
+      });
+    }
+    return contacts;
   }
 }

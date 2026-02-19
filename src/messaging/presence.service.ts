@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 
-export type ParticipantType = 'admin' | 'tutor' | 'student';
+export type ParticipantType = 'admin' | 'tutor' | 'student' | 'school';
 
 export interface PresenceInfo {
   userType: ParticipantType;
