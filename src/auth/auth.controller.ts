@@ -10,6 +10,7 @@ import {
   Logger,
   Query,
   Put,
+  Patch,
   Param,
   UnauthorizedException,
   Delete,
@@ -17,9 +18,20 @@ import {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StudentLoginDto } from './dto/student-login.dto';
+import { TeamUpDto } from './dto/team-up.dto';
 import { UpdateStudentProfileDto } from './dto/update-student-profile.dto';
 import { CreateParentAccountDto } from './dto/create-parent-account.dto';
 import { LinkStudentDto } from './dto/link-student.dto';
+import {
+  SendParentCodeDto,
+  VerifyParentCodeDto,
+  ParentPinDto,
+  ParentLoginWithPinDto,
+  ParentCompleteRegistrationDto,
+  ResetParentPinDto,
+  ParentMessageDto,
+  LinkChildDto,
+} from './dto/parent-verification.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
@@ -49,7 +61,6 @@ export class AuthController {
   @Post('student/login')
   @HttpCode(HttpStatus.OK)
   async studentLogin(@Body() loginDto: StudentLoginDto) {
-    this.logger.log(`Student login request received for: ${loginDto.username}`);
     return this.authService.studentLogin(loginDto.username, loginDto.password);
   }
 
@@ -65,6 +76,71 @@ export class AuthController {
   async parentLogin(@Body() loginDto: LoginDto) {
     this.logger.log(`Parent login request received for: ${loginDto.email}`);
     return this.authService.parentLogin(loginDto.email, loginDto.password);
+  }
+
+  @Post('parent/login-with-pin')
+  @HttpCode(HttpStatus.OK)
+  async parentLoginWithPin(@Body() dto: ParentLoginWithPinDto) {
+    return this.authService.parentLoginWithPin(dto.email, dto.pin);
+  }
+
+  @Post('parent/forgot-pin')
+  @HttpCode(HttpStatus.OK)
+  async parentForgotPin(@Body() dto: SendParentCodeDto) {
+    return this.authService.parentRequestPinReset(dto.email);
+  }
+
+  @Post('parent/reset-pin')
+  @HttpCode(HttpStatus.OK)
+  async parentResetPin(@Body() dto: ResetParentPinDto) {
+    return this.authService.parentResetPin(dto.email, dto.code, dto.new_pin);
+  }
+
+  @Post('parent/send-code')
+  @HttpCode(HttpStatus.OK)
+  async parentSendCode(@Body() dto: SendParentCodeDto) {
+    return this.authService.parentSendVerificationCode(dto.email);
+  }
+
+  @Post('parent/verify-code')
+  @HttpCode(HttpStatus.OK)
+  async parentVerifyCode(@Body() dto: VerifyParentCodeDto) {
+    return this.authService.parentVerifyCode(dto.email, dto.code);
+  }
+
+  @Post('parent/set-pin')
+  @HttpCode(HttpStatus.OK)
+  async parentSetPin(@Body() dto: ParentPinDto) {
+    return this.authService.parentSetPin(dto.verification_token, dto.pin);
+  }
+
+  @Post('parent/submit-pin')
+  @HttpCode(HttpStatus.OK)
+  async parentSubmitPin(@Body() dto: ParentPinDto) {
+    return this.authService.parentSubmitPin(dto.verification_token, dto.pin);
+  }
+
+  @Post('parent/send-register-code')
+  @HttpCode(HttpStatus.OK)
+  async parentSendRegisterCode(@Body() dto: SendParentCodeDto) {
+    return this.authService.parentSendRegisterCode(dto.email);
+  }
+
+  @Post('parent/verify-register-code')
+  @HttpCode(HttpStatus.OK)
+  async parentVerifyRegisterCode(@Body() dto: VerifyParentCodeDto) {
+    return this.authService.parentVerifyRegisterCode(dto.email, dto.code);
+  }
+
+  @Post('parent/complete-registration')
+  @HttpCode(HttpStatus.CREATED)
+  async parentCompleteRegistration(@Body() dto: ParentCompleteRegistrationDto) {
+    return this.authService.parentCompleteRegistration(
+      dto.verification_token,
+      dto.pin,
+      dto.first_name,
+      dto.last_name,
+    );
   }
 
   @Post('parent/login-with-student')
@@ -96,6 +172,28 @@ export class AuthController {
     return this.authService.getStudentInfo(req.user.sub);
   }
 
+  /** Check if usernames are valid for team-up (same class, active). Student only. */
+  @UseGuards(JwtAuthGuard)
+  @Post('student/team-up/check')
+  @HttpCode(HttpStatus.OK)
+  async teamUpCheck(@Request() req, @Body() dto: TeamUpDto) {
+    if (req.user?.role !== 'student') {
+      throw new UnauthorizedException('Only students can use team-up');
+    }
+    return this.authService.teamUpCheck(req.user.sub, dto.usernames);
+  }
+
+  /** Register teammates as logged in and mark attendance. Student only. */
+  @UseGuards(JwtAuthGuard)
+  @Post('student/team-up')
+  @HttpCode(HttpStatus.OK)
+  async teamUp(@Request() req, @Body() dto: TeamUpDto) {
+    if (req.user?.role !== 'student') {
+      throw new UnauthorizedException('Only students can use team-up');
+    }
+    return this.authService.teamUp(req.user.sub, dto.usernames);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('tutor/verify')
   async verifyTutorToken(@Request() req) {
@@ -112,9 +210,49 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Patch('tutor/me')
+  async updateTutorDisplayClassName(@Request() req, @Body() dto: { display_class_name?: string | null }) {
+    if (req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only tutors can update this');
+    }
+    return this.authService.updateTutorDisplayClassName(
+      req.user.sub,
+      dto.display_class_name ?? null,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('parent/me')
   async getParentInfo(@Request() req) {
     return this.authService.getParentInfo(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('parent/messages')
+  async getParentMessages(@Request() req) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can view messages');
+    }
+    return this.authService.getParentMessages(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('parent/messages')
+  async sendParentMessage(@Request() req, @Body() dto: ParentMessageDto) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can send messages');
+    }
+    return this.authService.sendParentMessage(req.user.sub, dto.body);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('parent/link-child')
+  @HttpCode(HttpStatus.CREATED)
+  async linkChild(@Request() req, @Body() dto: LinkChildDto) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can link a child');
+    }
+    return this.authService.linkChildToParent(req.user.sub, dto.student_username, dto.relationship);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -188,11 +326,60 @@ export class AuthController {
     return this.authService.getStudentExamAttemptsForParent(req.user.sub, studentId);
   }
 
+  // Get student quiz attempts (course > course level > topic > quizzes + results) for parent report
+  @UseGuards(JwtAuthGuard)
+  @Get('parent/student/:studentId/quizzes')
+  async getStudentQuizzes(@Request() req, @Param('studentId') studentId: string) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can view student quizzes');
+    }
+    return this.authService.getStudentQuizAttemptsForParent(req.user.sub, studentId);
+  }
+
+  // Get student take-away assignments (for parent report)
+  @UseGuards(JwtAuthGuard)
+  @Get('parent/student/:studentId/take-away')
+  async getStudentTakeAway(@Request() req, @Param('studentId') studentId: string) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can view student take-away');
+    }
+    return this.authService.getStudentTakeAwayForParent(req.user.sub, studentId);
+  }
+
+  // Get student portfolio (for parent report)
+  @UseGuards(JwtAuthGuard)
+  @Get('parent/student/:studentId/portfolio')
+  async getStudentPortfolio(@Request() req, @Param('studentId') studentId: string) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can view student portfolio');
+    }
+    return this.authService.getStudentPortfolioForParent(req.user.sub, studentId);
+  }
+
+  // Get student overview - courses + tutors (for parent report)
+  @UseGuards(JwtAuthGuard)
+  @Get('parent/student/:studentId/overview')
+  async getStudentOverview(@Request() req, @Param('studentId') studentId: string) {
+    if (req.user.role !== 'parent') {
+      throw new UnauthorizedException('Only parents can view student overview');
+    }
+    return this.authService.getStudentOverviewForParent(req.user.sub, studentId);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('admin/student/:studentId')
   async getStudentInfoForAdmin(@Param('studentId') studentId: string) {
     // Admin can view any student's profile
     return this.authService.getStudentInfo(studentId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('admin/parents')
+  async getParentsForAdmin(@Request() req, @Query('school_id') schoolId?: string) {
+    if (req.user.role !== 'admin') {
+      throw new UnauthorizedException('Only admins can access this endpoint');
+    }
+    return this.authService.getParentsForAdmin(schoolId || undefined);
   }
 
   @UseGuards(JwtAuthGuard)

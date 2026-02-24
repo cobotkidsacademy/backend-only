@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ConflictException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
 import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto } from './dto/school.dto';
@@ -169,7 +169,14 @@ export class SchoolService {
     return data;
   }
 
+  private isNetworkError(err: any): boolean {
+    const msg = err?.message?.toLowerCase?.() ?? '';
+    return msg.includes('fetch failed') || msg.includes('network') || msg.includes('econnrefused') || err?.name === 'TypeError';
+  }
+
   async getClassesBySchool(schoolId: string) {
+    let classes: any[];
+    try {
     const { data, error } = await this.supabase
       .from('classes')
       .select(`
@@ -180,13 +187,151 @@ export class SchoolService {
       .order('created_at', { ascending: false });
 
     if (error) {
+        if (this.isNetworkError(error)) {
+          throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+        }
       throw new Error(error.message);
+      }
+      classes = data ?? [];
+    } catch (err: any) {
+      if (err instanceof ServiceUnavailableException) throw err;
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
     }
 
-    return data.map(cls => ({
+    if (!classes || classes.length === 0) {
+      return [];
+    }
+
+    const classIds = classes.map((c: any) => c.id);
+
+    let schedules: any[] = [];
+    let tutorAssignments: any[] = [];
+    let courseAssignments: any[] = [];
+    let classStudents: any[] = [];
+    let attempts: any[] = [];
+    let attemptsError: any = null;
+
+    try {
+      const [schedRes, tutorRes, courseRes] = await Promise.all([
+        this.supabase.from('class_schedules').select('id, class_id, day_of_week, start_time, end_time').in('class_id', classIds).eq('status', 'active'),
+        this.supabase.from('tutor_class_assignments').select('class_id, role, tutor:tutors(id, first_name, middle_name, last_name)').in('class_id', classIds).eq('status', 'active'),
+        this.supabase.from('class_course_level_assignments').select('class_id, course_level:course_levels(id, name, course:courses(id, name))').in('class_id', classIds).eq('enrollment_status', 'enrolled'),
+      ]);
+      schedules = schedRes.data ?? [];
+      tutorAssignments = tutorRes.data ?? [];
+      courseAssignments = courseRes.data ?? [];
+
+      const studentsRes = await this.supabase.from('students').select('id, class_id').in('class_id', classIds).eq('status', 'active');
+      classStudents = studentsRes.data ?? [];
+
+      const allStudentIds = classStudents.map((s: any) => s.id);
+      if (allStudentIds.length > 0) {
+        const attRes = await this.supabase.from('student_quiz_attempts').select('student_id, percentage').in('student_id', allStudentIds).eq('status', 'completed');
+        attempts = attRes.data ?? [];
+        attemptsError = attRes.error;
+      }
+    } catch (err: any) {
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
+    }
+
+    const schedulesByClass = (schedules || []).reduce((acc: Record<string, any[]>, s: any) => {
+      const key = s.class_id;
+      if (!acc[key]) acc[key] = [];
+      acc[key].push({
+        id: s.id,
+        day_of_week: s.day_of_week,
+        start_time: s.start_time,
+        end_time: s.end_time,
+      });
+      return acc;
+    }, {});
+
+    const tutorsByClass = (tutorAssignments || []).reduce((acc: Record<string, { lead?: any; assistant?: any }>, a: any) => {
+      const key = a.class_id;
+      if (!acc[key]) acc[key] = {};
+      const tutor = Array.isArray(a.tutor) ? a.tutor[0] : a.tutor;
+      const name = tutor ? `${tutor.first_name || ''} ${tutor.middle_name || ''} ${tutor.last_name || ''}`.trim() : null;
+      if (a.role === 'lead') acc[key].lead = tutor ? { id: tutor.id, name } : null;
+      if (a.role === 'assistant') acc[key].assistant = tutor ? { id: tutor.id, name } : null;
+      return acc;
+    }, {});
+
+    // Per class, take first enrolled course assignment's course name
+    const courseByClass = (courseAssignments || []).reduce((acc: Record<string, any>, a: any) => {
+      if (acc[a.class_id]) return acc;
+      const cl = a.course_level;
+      const course = cl?.course;
+      const courseObj = Array.isArray(course) ? course?.[0] : course;
+      acc[a.class_id] = courseObj ? { id: courseObj.id, name: courseObj.name } : null;
+      return acc;
+    }, {});
+
+    const studentsByClass: Record<string, string[]> = {};
+    (classStudents || []).forEach((s: any) => {
+      if (!studentsByClass[s.class_id]) studentsByClass[s.class_id] = [];
+      studentsByClass[s.class_id].push(s.id);
+    });
+
+    const bestPctByStudent: Record<string, number> = {};
+    if (!attemptsError && attempts) {
+      attempts.forEach((a: any) => {
+        const current = bestPctByStudent[a.student_id] ?? 0;
+        const pct =
+          typeof a.percentage === 'number'
+            ? a.percentage
+            : parseFloat(String(a.percentage ?? 0)) || 0;
+        if (pct > current) bestPctByStudent[a.student_id] = pct;
+      });
+    }
+
+    // Calculate class performance: mean of student best percentages
+    const categorizeScore = (pct: number): string => {
+      if (pct <= 25) return 'below_expectation';
+      if (pct <= 50) return 'approaching';
+      if (pct <= 75) return 'meeting';
+      return 'exceeding';
+    };
+
+    const classPerformance: Record<string, { average_percentage: number; performance_rating: string | null }> = {};
+    Object.keys(studentsByClass).forEach((classId) => {
+      const studentIds = studentsByClass[classId];
+      const percentages = studentIds
+        .map((sid) => bestPctByStudent[sid])
+        .filter((pct) => pct > 0);
+      
+      if (percentages.length === 0) {
+        classPerformance[classId] = { average_percentage: 0, performance_rating: null };
+      } else {
+        const mean = percentages.reduce((sum, pct) => sum + pct, 0) / percentages.length;
+        classPerformance[classId] = {
+          average_percentage: Math.round(mean * 100) / 100,
+          performance_rating: categorizeScore(mean),
+        };
+      }
+    });
+
+    return classes.map((cls: any) => {
+      const classSchedules = schedulesByClass[cls.id] || [];
+      const tutors = tutorsByClass[cls.id] || {};
+      const course = courseByClass[cls.id] || null;
+      const perf = classPerformance[cls.id] || { average_percentage: 0, performance_rating: null };
+      return {
       ...cls,
       student_count: cls.students?.[0]?.count || 0,
-    }));
+        course,
+        lead_tutor: tutors.lead ?? null,
+        assistant_tutor: tutors.assistant ?? null,
+        schedules: classSchedules,
+        performance_rating: perf.performance_rating,
+        average_percentage: perf.average_percentage,
+      };
+    });
   }
 
   async getClassById(id: string) {
@@ -326,84 +471,96 @@ export class SchoolService {
       throw new NotFoundException('School not found');
     }
 
-    // Parse student names and create student objects
-    const studentsToInsert = [];
+    const schoolCode = school.code;
     const defaultPassword = '1234';
     const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+    // Single query: fetch ALL existing students in this school for fast lookup
+    const { data: existingStudents } = await this.supabase
+      .from('students')
+      .select('id, first_name, last_name, username')
+      .eq('school_id', dto.school_id);
+
+    const existingByName = new Set<string>();
+    const existingUsernames = new Set<string>();
+    for (const s of existingStudents || []) {
+      const key = `${(s.first_name || '').toLowerCase()}|${(s.last_name || '').toLowerCase()}`;
+      existingByName.add(key);
+      existingUsernames.add((s.username || '').toLowerCase());
+    }
+
+    const studentsToInsert: Array<{
+      class_id: string;
+      school_id: string;
+      first_name: string;
+      last_name: string;
+      username: string;
+      password_hash: string;
+      plain_password: string;
+    }> = [];
     const conflicts: any[] = [];
+    const usedUsernamesInBatch = new Set<string>(existingUsernames);
 
     for (const studentName of dto.students) {
-      // Trim and split by space
       const trimmed = studentName.trim();
-      if (!trimmed) continue; // Skip empty lines
+      if (!trimmed) continue;
 
       const parts = trimmed.split(/\s+/);
-      if (parts.length < 2) {
-        // If only one word, use it as first name and empty last name
-        parts.push('');
-      }
+      const firstName = parts[0] || '';
+      const lastName = parts.length < 2 ? '' : parts.slice(1).join(' ');
+      if (!firstName) continue;
 
-      const firstName = parts[0];
-      const lastName = parts.slice(1).join(' '); // Join remaining parts as last name
-
-      if (!firstName) continue; // Skip if no first name
-
-      // Check if a student with the same name already exists in this school
-      const existingByName = await this.findExistingStudentByName(
-        dto.school_id,
-        firstName,
-        lastName,
-      );
-
-      if (existingByName) {
-        // Skip creating this student and record the conflict
+      const lookupKey = `${firstName.toLowerCase()}|${lastName.toLowerCase()}`;
+      if (existingByName.has(lookupKey)) {
         conflicts.push({
           full_name: trimmed,
           first_name: firstName,
           last_name: lastName,
-          existing_student: {
-            id: existingByName.id,
-            first_name: existingByName.first_name,
-            last_name: existingByName.last_name,
-            class_id: existingByName.class_id,
-            username: existingByName.username,
-          },
+          reason: 'already_exists',
         });
         continue;
       }
 
-      // Generate username
-      const username = await this.generateStudentUsername(
-        school.code,
-        firstName,
-        lastName,
-      );
+      // Generate unique username in memory (no DB calls)
+      const baseUsername = `${schoolCode}-${firstName}${lastName}`
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '');
+      let username = baseUsername;
+      let counter = 1;
+      while (usedUsernamesInBatch.has(username)) {
+        username = baseUsername + counter;
+        counter++;
+      }
+      usedUsernamesInBatch.add(username);
 
       studentsToInsert.push({
         class_id: dto.class_id,
         school_id: dto.school_id,
         first_name: firstName,
         last_name: lastName || '',
-        username: username,
+        username,
         password_hash: passwordHash,
         plain_password: defaultPassword,
       });
+      existingByName.add(lookupKey); // Prevent duplicates in same batch
     }
 
     let createdStudents: any[] = [];
 
     if (studentsToInsert.length > 0) {
-      // Insert all non-conflicting students
-      const { data, error } = await this.supabase
-        .from('students')
-        .insert(studentsToInsert)
-        .select();
+      const BATCH_SIZE = 2000;
+      for (let i = 0; i < studentsToInsert.length; i += BATCH_SIZE) {
+        const batch = studentsToInsert.slice(i, i + BATCH_SIZE);
+        const { data, error } = await this.supabase
+          .from('students')
+          .insert(batch)
+          .select();
 
-      if (error) {
-        throw new ConflictException(error.message);
+        if (error) {
+          throw new ConflictException(error.message);
+        }
+        createdStudents = createdStudents.concat(data || []);
       }
-
-      createdStudents = data || [];
     }
 
     if (createdStudents.length === 0 && conflicts.length === 0) {
@@ -418,6 +575,7 @@ export class SchoolService {
         generated_password: defaultPassword,
       })),
       conflicts,
+      skipped: conflicts.length,
     };
   }
 
@@ -670,8 +828,11 @@ export class SchoolService {
     }));
   }
 
-  async getStudentsBySchool(schoolId: string) {
-    const { data: students, error } = await this.supabase
+  async getStudentsBySchool(
+    schoolId: string,
+    filters?: { gender?: string; performance_rating?: string },
+  ) {
+    let query = this.supabase
       .from('students')
       .select(`
         id,
@@ -679,6 +840,8 @@ export class SchoolService {
         last_name,
         username,
         email,
+        gender,
+        last_login,
         status,
         class:classes(
           id,
@@ -690,11 +853,206 @@ export class SchoolService {
       .eq('status', 'active')
       .order('first_name', { ascending: true });
 
+    if (filters?.gender) {
+      query = query.eq('gender', filters.gender);
+    }
+
+    const { data: students, error } = await query;
+
     if (error) {
       throw new Error(error.message);
     }
 
-    return students || [];
+    if (!students || students.length === 0) {
+      return [];
+    }
+
+    const studentIds = students.map((s: any) => s.id);
+    const parentByStudent: Record<string, { email: string }> = {};
+    const bestPctByStudent: Record<string, number> = {};
+
+    const { data: links } = await this.supabase
+      .from('parent_student_links')
+      .select('student_id, parent:parents(email)')
+      .in('student_id', studentIds);
+    if (links) {
+      links.forEach((l: any) => {
+        if (parentByStudent[l.student_id]) return;
+        const p = Array.isArray(l.parent) ? l.parent[0] : l.parent;
+        if (p?.email) parentByStudent[l.student_id] = { email: p.email };
+      });
+    }
+
+    const { data: attempts, error: attemptsError } = await this.supabase
+      .from('student_quiz_attempts')
+      .select('student_id, percentage')
+      .in('student_id', studentIds)
+      .eq('status', 'completed');
+    if (!attemptsError && attempts) {
+      attempts.forEach((a: any) => {
+        const current = bestPctByStudent[a.student_id] ?? 0;
+        const pct =
+          typeof a.percentage === 'number'
+            ? a.percentage
+            : parseFloat(String(a.percentage ?? 0)) || 0;
+        if (pct > current) bestPctByStudent[a.student_id] = pct;
+      });
+    }
+
+    const categorizeScore = (pct: number): string => {
+      if (pct <= 25) return 'below_expectation';
+      if (pct <= 50) return 'approaching';
+      if (pct <= 75) return 'meeting';
+      return 'exceeding';
+    };
+
+    const result = students.map((s: any) => {
+      const bestPct = bestPctByStudent[s.id] ?? 0;
+      const performance_rating = bestPct > 0 ? categorizeScore(bestPct) : null;
+      return {
+        ...s,
+        parent: parentByStudent[s.id] ?? null,
+        performance_rating,
+      };
+    });
+
+    if (filters?.performance_rating) {
+      return result.filter((s: any) => s.performance_rating === filters.performance_rating);
+    }
+    return result;
+  }
+
+  async getStudentPortfolioForSchool(schoolId: string, studentId: string) {
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id, school_id')
+      .eq('id', studentId)
+      .single();
+
+    if (studentError || !student || student.school_id !== schoolId) {
+      throw new NotFoundException('Student not found or does not belong to this school');
+    }
+
+    const { data: projects, error } = await this.supabase
+      .from('student_saved_projects')
+      .select(`
+        id,
+        project_name,
+        project_title,
+        project_type,
+        topic_id,
+        course_level_id,
+        course_id,
+        updated_at,
+        created_at,
+        topic:topics(id, name),
+        course_level:course_levels(id, name),
+        course:courses(id, name)
+      `)
+      .eq('student_id', studentId)
+      .eq('is_current', true)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return (projects || []).map((p: any) => {
+      const topic = Array.isArray(p.topic) ? p.topic[0] : p.topic;
+      const courseLevel = Array.isArray(p.course_level) ? p.course_level[0] : p.course_level;
+      const course = Array.isArray(p.course) ? p.course[0] : p.course;
+      return {
+        id: p.id,
+        project_name: p.project_name,
+        project_title: p.project_title || p.project_name,
+        topic_name: topic?.name,
+        course_level_name: courseLevel?.name,
+        course_name: course?.name,
+        project_type: p.project_type || 'other',
+        updated_at: p.updated_at,
+        created_at: p.created_at,
+      };
+    });
+  }
+
+  /**
+   * Get parents who have linked at least one student in this school (via parent_student_links).
+   * When a parent adds a student from this school, they appear here.
+   */
+  async getParentsBySchool(schoolId: string) {
+    const { data: schoolRow } = await this.supabase
+      .from('schools')
+      .select('id, name')
+      .eq('id', schoolId)
+      .single();
+    const schoolName = (schoolRow as any)?.name ?? null;
+
+    const { data: students, error: studentsError } = await this.supabase
+      .from('students')
+      .select(`
+        id,
+        first_name,
+        last_name,
+        class:classes(id, name)
+      `)
+      .eq('school_id', schoolId)
+      .eq('status', 'active');
+
+    if (studentsError || !students || students.length === 0) {
+      return [];
+    }
+
+    const studentIds = students.map((s: any) => s.id);
+    const studentMap = new Map(students.map((s: any) => [s.id, s]));
+
+    const { data: links, error: linksError } = await this.supabase
+      .from('parent_student_links')
+      .select(`
+        parent_id,
+        student_id,
+        relationship,
+        parent:parents(id, first_name, last_name, email, status)
+      `)
+      .in('student_id', studentIds);
+
+    if (linksError || !links || links.length === 0) {
+      return [];
+    }
+
+    const byParent = new Map<string, { parent: any; relationship?: string; children: Array<{ name: string; class?: string }> }>();
+    for (const link of links) {
+      const parent = Array.isArray(link.parent) ? link.parent[0] : link.parent;
+      if (!parent) continue;
+      const pid = parent.id;
+      const student = studentMap.get(link.student_id);
+      const childName = student
+        ? [student.first_name, student.last_name].filter(Boolean).join(' ') || 'Student'
+        : 'Student';
+      const classObj = student?.class;
+      const className = Array.isArray(classObj) ? classObj[0]?.name : classObj?.name;
+
+      if (!byParent.has(pid)) {
+        byParent.set(pid, {
+          parent: { id: parent.id, first_name: parent.first_name, last_name: parent.last_name, email: parent.email, status: parent.status },
+          relationship: link.relationship,
+          children: [],
+        });
+      }
+      const entry = byParent.get(pid)!;
+      if (!entry.children.some((c) => c.name === childName && c.class === className)) {
+        entry.children.push({ name: childName, class: className });
+      }
+    }
+
+    return Array.from(byParent.values()).map(({ parent, relationship, children }) => ({
+      id: parent.id,
+      name: [parent.first_name, parent.last_name].filter(Boolean).join(' ') || parent.email,
+      email: parent.email,
+      relationship: relationship || undefined,
+      school_name: schoolName,
+      children,
+      status: parent.status || 'active',
+    }));
   }
 }
 

@@ -243,7 +243,7 @@ export class TakeAwayService {
           ? this.supabase.from('course_levels').select('id, name, level_number, course_id').in('id', courseLevelIds)
           : { data: [], error: null },
         quizIds.length > 0 
-          ? this.supabase.from('take_away_quizzes').select('id, title, description, questions_count, total_points, passing_score').in('id', quizIds)
+          ? this.supabase.from('take_away_quizzes').select('id, title, description, time_limit_minutes, questions_count, total_points, passing_score').in('id', quizIds)
           : { data: [], error: null },
       ]);
 
@@ -333,7 +333,7 @@ export class TakeAwayService {
       this.supabase.from('tutors').select('id, first_name, middle_name, last_name, email').eq('id', assignment.tutor_id).single(),
       this.supabase.from('course_levels').select('id, name, level_number, course_id').eq('id', assignment.course_level_id).single(),
       assignment.take_away_quiz_id
-        ? this.supabase.from('take_away_quizzes').select('id, title, description, questions_count, total_points, passing_score').eq('id', assignment.take_away_quiz_id).single()
+        ? this.supabase.from('take_away_quizzes').select('id, title, description, time_limit_minutes, questions_count, total_points, passing_score').eq('id', assignment.take_away_quiz_id).single()
         : { data: null },
     ]);
 

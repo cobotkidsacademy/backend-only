@@ -31,7 +31,7 @@ export class AttendanceService {
     const loginTime = new Date(login_timestamp);
     const attendanceDate = this.formatDate(loginTime);
 
-    this.logger.log(`Attempting to auto-mark attendance for student ${student_id} on ${attendanceDate}`);
+    this.logger.debug(`Attempting to auto-mark attendance for student ${student_id} on ${attendanceDate}`);
 
     // Get student's class
     const { data: student, error: studentError } = await this.supabase
@@ -61,7 +61,7 @@ export class AttendanceService {
 
     if (existingToday) {
       // Already marked for today, update login timestamp if needed
-      this.logger.log(`Attendance already marked for student ${student_id} on ${attendanceDate}, updating login timestamp`);
+      this.logger.debug(`Attendance already marked for student ${student_id} on ${attendanceDate}, updating login timestamp`);
       await this.supabase
         .from('attendance_records')
         .update({ login_timestamp: login_timestamp })
@@ -93,7 +93,7 @@ export class AttendanceService {
 
       if (daysSinceLastAttendance < 7) {
         // Less than 7 days since last attendance - don't mark again
-        this.logger.log(
+        this.logger.debug(
           `Attendance not marked: Only ${daysSinceLastAttendance} days since last attendance (requires 7 days)`
         );
         return null;
@@ -143,11 +143,11 @@ export class AttendanceService {
               const minutesLate = Math.floor((loginTime.getTime() - classStartTime.getTime()) / (1000 * 60));
               if (minutesLate > 15) { // More than 15 minutes late
                 attendanceStatus = 'late';
-                this.logger.log(`Student ${student_id} logged in ${minutesLate} minutes after class start time`);
+                this.logger.debug(`Student ${student_id} logged in ${minutesLate} minutes after class start time`);
               }
             }
           } else {
-            this.logger.log(
+            this.logger.debug(
               `Student ${student_id} login time ${loginTime.toISOString()} is outside schedule window ` +
               `(${scheduleStartWindow.toISOString()} to ${scheduleEndWindow.toISOString()})`
             );
@@ -157,17 +157,17 @@ export class AttendanceService {
       }
 
       if (!matchingSchedule) {
-        this.logger.log(`No schedule found for ${dayOfWeek} for class ${student.class_id}, marking as present anyway`);
+        this.logger.debug(`No schedule found for ${dayOfWeek} for class ${student.class_id}, marking as present anyway`);
         isWithinScheduleWindow = true; // Allow marking if no schedule found
       } else if (!isWithinScheduleWindow) {
         // Schedule exists but login time is outside window - don't mark attendance
-        this.logger.log(
+        this.logger.debug(
           `Attendance not marked: Student ${student_id} login time is outside schedule window for ${dayOfWeek}`
         );
         return null;
       }
     } else {
-      this.logger.log(`No active schedules found for class ${student.class_id}, marking attendance anyway`);
+      this.logger.debug(`No active schedules found for class ${student.class_id}, marking attendance anyway`);
       isWithinScheduleWindow = true; // Allow marking if no schedule found
     }
 
@@ -200,8 +200,85 @@ export class AttendanceService {
       return null;
     }
 
-    this.logger.log(`✅ Auto-marked attendance for student ${student_id} on ${attendanceDate} with status: ${attendanceStatus}`);
+    this.logger.debug(`Auto-marked attendance for student ${student_id} on ${attendanceDate} with status: ${attendanceStatus}`);
     return attendance as AttendanceRecord;
+  }
+
+  /**
+   * Mark a student as present for a session (e.g. team-up or logged-in host).
+   * Always creates or updates today's attendance record; no 7-day or schedule checks.
+   */
+  async markPresentForSession(student_id: string, login_timestamp: string): Promise<AttendanceRecord | null> {
+    const loginTime = new Date(login_timestamp);
+    const attendanceDate = this.formatDate(loginTime);
+
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id, class_id')
+      .eq('id', student_id)
+      .single();
+
+    if (studentError || !student?.class_id) {
+      this.logger.warn(`Student not found or no class: ${student_id}`, studentError);
+      return null;
+    }
+
+    const { data: courseLevel } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('course_level_id')
+      .eq('class_id', student.class_id)
+      .eq('enrollment_status', 'enrolled')
+      .limit(1)
+      .maybeSingle();
+
+    const courseLevelId = courseLevel?.course_level_id || null;
+
+    let existingQuery = this.supabase
+      .from('attendance_records')
+      .select('id')
+      .eq('student_id', student_id)
+      .eq('class_id', student.class_id)
+      .eq('attendance_date', attendanceDate);
+    if (courseLevelId == null) {
+      existingQuery = existingQuery.is('course_level_id', null);
+    } else {
+      existingQuery = existingQuery.eq('course_level_id', courseLevelId);
+    }
+    const { data: existing } = await existingQuery.maybeSingle();
+
+    if (existing) {
+      await this.supabase
+        .from('attendance_records')
+        .update({ login_timestamp, status: 'present', updated_at: new Date().toISOString() })
+        .eq('id', existing.id);
+      this.logger.log(`Updated session attendance for student ${student_id} on ${attendanceDate}`);
+      const { data: updated } = await this.supabase
+        .from('attendance_records')
+        .select()
+        .eq('id', existing.id)
+        .single();
+      return updated as AttendanceRecord;
+    }
+
+    const { data: inserted, error } = await this.supabase
+      .from('attendance_records')
+      .insert({
+        student_id: student_id,
+        class_id: student.class_id,
+        course_level_id: courseLevelId,
+        attendance_date: attendanceDate,
+        status: 'present',
+        login_timestamp: login_timestamp,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      this.logger.error(`Error marking session attendance: ${error.message}`, error);
+      return null;
+    }
+    this.logger.log(`✅ Marked session attendance for student ${student_id} on ${attendanceDate}`);
+    return inserted as AttendanceRecord;
   }
 
   /**
@@ -1122,6 +1199,150 @@ export class AttendanceService {
         } : null,
       };
     });
+  }
+
+  /**
+   * Report: attendance (time present, status) + topic learned per day.
+   * Topic comes from the class code the student used that day.
+   */
+  async getAttendanceAndTopicsReport(
+    studentId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<{
+    entries: Array<{
+      date: string;
+      login_timestamp: string | null;
+      status: 'present' | 'late' | 'absent' | null;
+      topic_learned: { id: string; name: string } | null;
+    }>;
+  }> {
+    const [attendanceRows, usageRows] = await Promise.all([
+      this.supabase
+        .from('attendance_records')
+        .select('attendance_date, login_timestamp, status')
+        .eq('student_id', studentId)
+        .in('status', ['present', 'late'])
+        .gte('attendance_date', startDate)
+        .lte('attendance_date', endDate)
+        .order('attendance_date', { ascending: false }),
+      this.supabase
+        .from('student_class_code_usage')
+        .select('used_at, topic:topics(id, name)')
+        .eq('student_id', studentId)
+        .gte('used_at', `${startDate}T00:00:00.000Z`)
+        .lte('used_at', `${endDate}T23:59:59.999Z`)
+        .order('used_at', { ascending: false }),
+    ]);
+
+    const attendanceByDate = new Map<string, { login_timestamp: string | null; status: string }>();
+    (attendanceRows.data || []).forEach((r: any) => {
+      attendanceByDate.set(r.attendance_date, {
+        login_timestamp: r.login_timestamp || null,
+        status: r.status,
+      });
+    });
+
+    const topicByDate = new Map<string, { id: string; name: string }>();
+    (usageRows.data || []).forEach((r: any) => {
+      const date = r.used_at?.split('T')[0];
+      if (!date || topicByDate.has(date)) return;
+      const topic = Array.isArray(r.topic) ? r.topic[0] : r.topic;
+      if (topic?.id && topic?.name) {
+        topicByDate.set(date, { id: topic.id, name: topic.name });
+      }
+    });
+
+    const dates = new Set([
+      ...attendanceByDate.keys(),
+      ...topicByDate.keys(),
+    ]);
+    const sortedDates = Array.from(dates).sort().reverse();
+
+    const entries = sortedDates.map((date) => {
+      const att = attendanceByDate.get(date);
+      const topic = topicByDate.get(date) || null;
+      const status = att?.status ?? null;
+      return {
+        date,
+        login_timestamp: att?.login_timestamp ?? null,
+        status: status as 'present' | 'late' | 'absent' | null,
+        topic_learned: topic,
+      };
+    });
+
+    return { entries };
+  }
+
+  /**
+   * Same report for a class (admin/tutor). Optional student_id to filter one student.
+   */
+  async getAttendanceAndTopicsReportForClass(
+    classId: string,
+    startDate: string,
+    endDate: string,
+    studentId?: string,
+  ): Promise<{
+    entries: Array<{
+      student_id: string;
+      student_name: string;
+      username: string;
+      date: string;
+      login_timestamp: string | null;
+      status: string | null;
+      topic_learned: { id: string; name: string } | null;
+    }>;
+  }> {
+    let studentQuery = this.supabase
+      .from('students')
+      .select('id, first_name, last_name, username')
+      .eq('class_id', classId)
+      .eq('status', 'active');
+    if (studentId) {
+      studentQuery = studentQuery.eq('id', studentId);
+    }
+    const { data: students, error: studentsError } = await studentQuery;
+    if (studentsError || !students?.length) {
+      return { entries: [] };
+    }
+
+    const entries: Array<{
+      student_id: string;
+      student_name: string;
+      username: string;
+      date: string;
+      login_timestamp: string | null;
+      status: string | null;
+      topic_learned: { id: string; name: string } | null;
+    }> = [];
+
+    for (const s of students) {
+      const { entries: studentEntries } = await this.getAttendanceAndTopicsReport(
+        s.id,
+        startDate,
+        endDate,
+      );
+      const name = [s.first_name, s.last_name].filter(Boolean).join(' ') || s.username;
+      studentEntries.forEach((e) => {
+        entries.push({
+          student_id: s.id,
+          student_name: name,
+          username: s.username,
+          date: e.date,
+          login_timestamp: e.login_timestamp,
+          status: e.status,
+          topic_learned: e.topic_learned,
+        });
+      });
+    }
+
+    entries.sort((a, b) => {
+      const d = b.date.localeCompare(a.date);
+      if (d !== 0) return d;
+      return a.student_name.localeCompare(b.student_name);
+    });
+
+    return { entries };
   }
 }
 

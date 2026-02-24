@@ -20,6 +20,8 @@ import { AttendanceModule } from './attendance/attendance.module';
 import { BugsModule } from './bugs/bugs.module';
 import { FormsModule } from './forms/forms.module';
 import { TakeAwayModule } from './take-away/take-away.module';
+import { MessagingModule } from './messaging/messaging.module';
+import { SelfClassCodeModule } from './self-class-code/self-class-code.module';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { TakeAwayModule } from './take-away/take-away.module';
     BugsModule,
     FormsModule,
     TakeAwayModule,
+    MessagingModule,
+    SelfClassCodeModule,
   ],
   controllers: [AppController],
   providers: [AppService, KeepAliveService],

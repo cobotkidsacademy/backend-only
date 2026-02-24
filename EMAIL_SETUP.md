@@ -1,0 +1,106 @@
+# Parent Portal – Email configuration (verification codes)
+
+The app sends the **6-digit verification code** to the **email address the user enters**. To actually deliver these emails, configure SMTP in your `.env` file.
+
+---
+
+## 1. Add these variables to `backend/.env`
+
+```env
+SMTP_HOST=your-smtp-host
+SMTP_PORT=587
+SMTP_USER=your-email@domain.com
+SMTP_PASS=your-app-password
+MAIL_FROM=your-email@domain.com
+```
+
+- **SMTP_HOST** – Your provider’s SMTP server (see examples below).  
+- **SMTP_PORT** – Usually `587` (TLS) or `465` (SSL).  
+- **SMTP_USER** – Full email address used to sign in to SMTP.  
+- **SMTP_PASS** – Password or **App Password** (not your normal email password for Gmail/Outlook).  
+- **MAIL_FROM** – “From” address recipients see (often same as `SMTP_USER`).
+
+After changing `.env`, restart the backend server.
+
+---
+
+## 2. Gmail
+
+1. Use a Gmail account (e.g. `cobot.parents@gmail.com`).
+2. Turn on 2-Step Verification: [Google Account → Security → 2-Step Verification](https://myaccount.google.com/security).
+3. Create an **App Password**:  
+   [Google Account → Security → 2-Step Verification → App passwords](https://myaccount.google.com/apppasswords)  
+   - Select “Mail” and your device, then generate.  
+   - Copy the **16-character password** (no spaces).
+4. In `.env`:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=cobot.parents@gmail.com
+SMTP_PASS=xxxx xxxx xxxx xxxx
+MAIL_FROM=cobot.parents@gmail.com
+```
+
+Use the 16-character App Password for `SMTP_PASS` (you can paste it with or without spaces).
+
+---
+
+## 3. Outlook / Microsoft 365
+
+1. Use an Outlook or Microsoft 365 account.
+2. Create an app password if you use 2FA: [Microsoft account → Security → Advanced security → App passwords](https://account.microsoft.com/security).
+3. In `.env`:
+
+```env
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USER=your-email@outlook.com
+SMTP_PASS=your-app-password
+MAIL_FROM=your-email@outlook.com
+```
+
+---
+
+## 4. Other providers (generic SMTP)
+
+| Provider   | SMTP_HOST           | SMTP_PORT |
+|-----------|---------------------|-----------|
+| SendGrid  | smtp.sendgrid.net   | 587       |
+| Mailgun   | smtp.mailgun.org    | 587       |
+| Brevo    | smtp-relay.brevo.com| 587       |
+| Yahoo     | smtp.mail.yahoo.com | 587       |
+
+Use the email and password (or API/app password) they give you for SMTP for `SMTP_USER` and `SMTP_PASS`. Set `MAIL_FROM` to the same or your chosen “From” address.
+
+---
+
+## 5. Check that it works
+
+1. Restart the backend.
+2. On parent login/register, enter **your own email** and request a code.
+3. Check that email’s inbox (and spam) for “Your COBOT Parent Portal verification code”.
+
+If SMTP is not set or wrong, the server will still run but **won’t send email**; it will only log the code in the backend console (e.g. `[No SMTP] Would send verification to ... code=123456`).
+
+---
+
+## 6. If email is still not sending
+
+1. **Restart the backend** after changing `.env` (Config is read on startup).
+2. **Check backend console on startup**  
+   - You should see: `Mailer initialized with SMTP (smtp.gmail.com)`.  
+   - If you see: `SMTP not configured. Have: host=..., user=..., pass=...` then one of `SMTP_HOST`, `SMTP_USER`, or `SMTP_PASS` is missing or wrong in `.env`.
+3. **When you request a code**, check the backend console again:  
+   - Success: `Verification email sent to your@email.com`.  
+   - Failure: `Failed to send verification email to ...: <error message>`.  
+   - Common Gmail errors:  
+     - **"Invalid login"** or **"Username and Password not accepted"** → Use a Gmail **App Password**, not your normal password, and ensure 2-Step Verification is on.  
+     - **"Connection timeout"** → Firewall or network blocking SMTP; try another network or provider.
+4. **App Password**: In `.env`, `SMTP_PASS` can be pasted with or without spaces (e.g. `abcd efgh ijkl mnop` or `abcdefghijklmnop`); both are accepted.
+
+## 7. Security notes
+
+- **Do not commit `.env`** (it should be in `.gitignore`).
+- Use an **App Password** or SMTP API key, not your main email password.
+- For production, use a dedicated sending domain and provider (e.g. SendGrid, Mailgun) for better deliverability.

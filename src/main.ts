@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import {
   findAvailablePort,
@@ -10,6 +11,7 @@ import { getCorsConfig } from './config/cors.config';
 import { ResponseCompressInterceptor } from './core/interceptors/response-compress.interceptor';
 import { PerformanceInterceptor } from './core/interceptors/performance.interceptor';
 import * as express from 'express';
+import * as path from 'path';
 // Compression middleware (install: npm install compression @types/compression)
 // For now, using conditional import to avoid breaking if not installed
 let compression: any;
@@ -26,6 +28,9 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     bodyParser: true, // Enable body parser
   });
+
+  // Use Socket.io adapter for WebSocket (messaging real-time)
+  app.useWebSocketAdapter(new IoAdapter(app));
 
   // Increase body parser limit to handle large .sb3 files (base64 encoded)
   // Default is 100kb, we need much more for Scratch projects
@@ -50,6 +55,9 @@ async function bootstrap() {
     }));
     console.log('✅ Response compression enabled');
   }
+
+  // Serve uploaded files (message attachments)
+  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
   // Enable CORS with proper configuration for development and production
   const corsOptions = getCorsConfig();

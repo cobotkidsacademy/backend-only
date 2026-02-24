@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -61,6 +62,54 @@ export class SchoolController {
   @UseGuards(JwtAuthGuard)
   async getStudentById(@Param('id') id: string) {
     return this.schoolService.getStudentById(id);
+  }
+
+  // =============================================
+  // SCHOOL "ME" ROUTES (must be before :id so "me" is not captured as id)
+  // =============================================
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/tutors')
+  async getSchoolTutors(@Request() req) {
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    return this.schoolService.getTutorsBySchool(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/students/:studentId/portfolio')
+  async getStudentPortfolio(@Request() req, @Param('studentId') studentId: string) {
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    return this.schoolService.getStudentPortfolioForSchool(req.user.sub, studentId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/students')
+  async getSchoolStudents(
+    @Request() req,
+    @Query('gender') gender?: string,
+    @Query('performance_rating') performance_rating?: string,
+  ) {
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    const filters =
+      gender || performance_rating
+        ? { gender: gender || undefined, performance_rating: performance_rating || undefined }
+        : undefined;
+    return this.schoolService.getStudentsBySchool(req.user.sub, filters);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('me/parents')
+  async getSchoolParents(@Request() req) {
+    if (req.user.role !== 'school') {
+      throw new UnauthorizedException('Only schools can access this endpoint');
+    }
+    return this.schoolService.getParentsBySchool(req.user.sub);
   }
 
   // =============================================
@@ -157,30 +206,6 @@ export class SchoolController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteStudent(@Param('id') id: string) {
     return this.schoolService.deleteStudent(id);
-  }
-
-  // =============================================
-  // SCHOOL ANALYTICS ENDPOINTS
-  // =============================================
-
-  @UseGuards(JwtAuthGuard)
-  @Get('me/tutors')
-  async getSchoolTutors(@Request() req) {
-    // Only allow schools to access their own data
-    if (req.user.role !== 'school') {
-      throw new UnauthorizedException('Only schools can access this endpoint');
-    }
-    return this.schoolService.getTutorsBySchool(req.user.sub);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('me/students')
-  async getSchoolStudents(@Request() req) {
-    // Only allow schools to access their own data
-    if (req.user.role !== 'school') {
-      throw new UnauthorizedException('Only schools can access this endpoint');
-    }
-    return this.schoolService.getStudentsBySchool(req.user.sub);
   }
 
 }

@@ -8,6 +8,7 @@ Run these SQL scripts in your Supabase SQL editor to set up the database schema.
 2. Navigate to SQL Editor
 3. Run the migration files in order:
    - `001_create_admins_table.sql` - Creates the admins table for authentication
+   - `038_create_messaging.sql` - Creates conversations and messages tables for student/tutor/admin messaging
 
 ## Default Admin Account
 

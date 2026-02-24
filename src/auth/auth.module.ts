@@ -8,6 +8,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { AttendanceModule } from '../attendance/attendance.module';
 import { CacheModule } from '../core/cache/cache.module';
+import { MailerModule } from '../mailer/mailer.module';
+import { TakeAwayModule } from '../take-away/take-away.module';
+import { StudentCoursesModule } from '../student-courses/student-courses.module';
 
 @Module({
   imports: [
@@ -24,6 +27,9 @@ import { CacheModule } from '../core/cache/cache.module';
     }),
     forwardRef(() => AttendanceModule),
     CacheModule,
+    MailerModule,
+    TakeAwayModule,
+    StudentCoursesModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, LocalStrategy],

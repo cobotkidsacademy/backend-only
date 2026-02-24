@@ -1,4 +1,4 @@
-import { IsString, IsOptional, MinLength, IsUrl } from 'class-validator';
+import { IsString, IsOptional, MinLength, IsUrl, IsArray, ArrayMaxSize } from 'class-validator';
 
 export class CreateSchoolDto {
   @IsString()
@@ -107,6 +107,8 @@ export class BulkCreateStudentDto {
   @IsString()
   school_id: string;
 
+  @IsArray()
+  @ArrayMaxSize(50000, { message: 'Maximum 50,000 students per batch' })
   @IsString({ each: true })
   students: string[]; // Array of "firstname lastname" strings
 }

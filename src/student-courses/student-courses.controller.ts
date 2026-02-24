@@ -108,16 +108,9 @@ export class StudentCoursesController {
       project_type?: string;
       file_format?: string;
       is_autosaved?: boolean;
+      team_member_ids?: string[]; // Teammate student IDs – save to each account when team-up active
     },
   ) {
-    console.log('Save project request received:', {
-      studentId: req.user.sub,
-      projectId: body.project_id,
-      topicId: body.topic_id,
-      courseId: body.course_id,
-      levelId: body.course_level_id,
-      projectName: body.project_name,
-    });
     return this.studentCoursesService.saveStudentProject(req.user.sub, body);
   }
 
@@ -173,14 +166,6 @@ export class StudentCoursesController {
     if (req.user.sub !== body.student_id) {
       throw new BadRequestException('Student ID mismatch');
     }
-    
-    // Log the green flag click (you can extend this to store in database or broadcast to other services)
-    console.log('Green flag clicked:', {
-      studentId: body.student_id,
-      topicId: body.topic_id,
-      courseId: body.course_id,
-      timestamp: body.timestamp,
-    });
     
     return {
       success: true,

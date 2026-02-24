@@ -1,9 +1,13 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef, ServiceUnavailableException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { AttendanceService } from '../attendance/attendance.service';
 import { CacheService } from '../core/cache/cache.service';
+import { MailerService } from '../mailer/mailer.service';
+import { TakeAwayService } from '../take-away/take-away.service';
+import { StudentCoursesService } from '../student-courses/student-courses.service';
 
 @Injectable()
 export class AuthService {
@@ -19,6 +23,9 @@ export class AuthService {
     @Inject(forwardRef(() => AttendanceService))
     private attendanceService: AttendanceService,
     private cacheService: CacheService,
+    private mailerService: MailerService,
+    private takeAwayService: TakeAwayService,
+    private studentCoursesService: StudentCoursesService,
   ) {}
 
   // ============ ADMIN LOGIN ============
@@ -120,9 +127,6 @@ export class AuthService {
 
   // ============ STUDENT LOGIN & PROFILE ============
   async studentLogin(username: string, password: string) {
-    this.logger.log(`=== STUDENT LOGIN ATTEMPT ===`);
-    this.logger.log(`Username: ${username}`);
-
     try {
       // Check rate limiting
       const rateLimitKey = `login:student:${username}`;
@@ -154,7 +158,6 @@ export class AuthService {
 
       // If not cached, fetch from database
       if (!student) {
-        this.logger.log(`Querying database for student...`);
         const { data: studentData, error } = await this.supabase
           .from('students')
           .select('id, username, password_hash, first_name, last_name, status, class_id, school_id, login_count, last_login')
@@ -180,11 +183,7 @@ export class AuthService {
         throw new UnauthorizedException('Your account is not active. Please contact your administrator.');
       }
 
-      this.logger.log(`Student found: ${student.username}, ID: ${student.id}`);
-      this.logger.log(`Password hash from DB (first 20 chars): ${student.password_hash?.substring(0, 20)}...`);
-
       // Verify password
-      this.logger.log(`Comparing passwords...`);
       const isPasswordValid = await bcrypt.compare(password, student.password_hash);
       
       if (!isPasswordValid) {
@@ -238,8 +237,6 @@ export class AuthService {
       await this.cacheService.set(`user:student:${student.id}:meta`, userMeta, 900, 'auth'); // 15 min TTL
       await this.cacheService.set(cachedUserKey, { id: student.id, username: student.username }, 900, 'auth');
 
-      this.logger.log(`✅ Successful login for student: ${username}`);
-
       return {
         token,
         user: userMeta,
@@ -251,6 +248,115 @@ export class AuthService {
       this.logger.error(`Student login error: ${error.message}`, error.stack);
       throw new UnauthorizedException('Login failed. Please check your credentials and try again.');
     }
+  }
+
+  /**
+   * Check if student usernames are valid for team-up (exist, active, same class as host).
+   * Used when students share one device and the logged-in student adds teammates by username.
+   */
+  async teamUpCheck(hostStudentId: string, usernames: string[]): Promise<{
+    valid: Array<{ username: string; id: string; first_name: string; last_name: string }>;
+    invalid: Array<{ username: string; reason: string }>;
+  }> {
+    const normalized = usernames.map((u) => (u || '').trim().toLowerCase()).filter(Boolean);
+    const unique = [...new Set(normalized)];
+
+    const { data: host, error: hostError } = await this.supabase
+      .from('students')
+      .select('id, class_id, school_id, username')
+      .eq('id', hostStudentId)
+      .single();
+
+    if (hostError || !host) {
+      throw new NotFoundException('Logged-in student not found');
+    }
+
+    const valid: Array<{ username: string; id: string; first_name: string; last_name: string }> = [];
+    const invalid: Array<{ username: string; reason: string }> = [];
+
+    for (const username of unique) {
+      const { data: student, error } = await this.supabase
+        .from('students')
+        .select('id, username, first_name, last_name, class_id, status')
+        .ilike('username', username)
+        .maybeSingle();
+
+      if (error || !student) {
+        invalid.push({ username, reason: 'Username not found' });
+        continue;
+      }
+      if (student.status !== 'active') {
+        invalid.push({ username: student.username, reason: 'Account is not active' });
+        continue;
+      }
+      if (student.id === hostStudentId) {
+        invalid.push({ username: student.username, reason: 'Cannot add yourself' });
+        continue;
+      }
+      if (student.class_id !== host.class_id) {
+        invalid.push({ username: student.username, reason: 'Not in the same class' });
+        continue;
+      }
+      valid.push({
+        username: student.username,
+        id: student.id,
+        first_name: student.first_name,
+        last_name: student.last_name,
+      });
+    }
+
+    return { valid, invalid };
+  }
+
+  /**
+   * Register teammates as logged in and mark attendance for each.
+   * Only students that pass teamUpCheck (same class, active) should be in usernames.
+   */
+  async teamUp(hostStudentId: string, usernames: string[]): Promise<{
+    teamed: Array<{ id: string; username: string; first_name: string; last_name: string; login_timestamp: string }>;
+    invalid: Array<{ username: string; reason: string }>;
+  }> {
+    const check = await this.teamUpCheck(hostStudentId, usernames);
+    const loginTimestamp = new Date().toISOString();
+    const teamed: Array<{ id: string; username: string; first_name: string; last_name: string; login_timestamp: string }> = [];
+
+    // Mark the logged-in student (host) as present for this session
+    this.attendanceService.markPresentForSession(hostStudentId, loginTimestamp).catch((err) => {
+      this.logger.warn(`Failed to mark host attendance: ${err.message}`);
+    });
+
+    for (const v of check.valid) {
+      const { data: student } = await this.supabase
+        .from('students')
+        .select('id, login_count')
+        .eq('id', v.id)
+        .single();
+
+      if (!student) continue;
+
+      const currentLoginCount = (student as any).login_count || 0;
+      await this.supabase
+        .from('students')
+        .update({
+          last_login: loginTimestamp,
+          login_count: currentLoginCount + 1,
+        })
+        .eq('id', v.id);
+
+      this.attendanceService.markPresentForSession(v.id, loginTimestamp).catch((err) => {
+        this.logger.warn(`Failed to mark teammate attendance ${v.id}: ${err.message}`);
+      });
+
+      teamed.push({
+        id: v.id,
+        username: v.username,
+        first_name: v.first_name,
+        last_name: v.last_name,
+        login_timestamp: loginTimestamp,
+      });
+    }
+
+    return { teamed, invalid: check.invalid };
   }
 
   async getStudentInfo(studentId: string) {
@@ -675,7 +781,8 @@ export class AuthService {
         level,
         phone,
         status,
-        profile_image_url
+        profile_image_url,
+        display_class_name
       `)
       .eq('id', tutorId)
       .single();
@@ -685,6 +792,18 @@ export class AuthService {
     }
 
     return tutor;
+  }
+
+  async updateTutorDisplayClassName(tutorId: string, displayClassName: string | null) {
+    const { data, error } = await this.supabase
+      .from('tutors')
+      .update({ display_class_name: displayClassName ? displayClassName.trim() || null : null })
+      .eq('id', tutorId)
+      .select()
+      .single();
+
+    if (error) throw new UnauthorizedException('Failed to update');
+    return data;
   }
 
   // ============ PARENT LOGIN & PROFILE ============
@@ -1034,7 +1153,6 @@ export class AuthService {
         first_name,
         last_name,
         email,
-        phone,
         status,
         created_at,
         updated_at
@@ -1078,6 +1196,388 @@ export class AuthService {
       ...parent,
       children: children.length > 0 ? children : undefined,
     };
+  }
+
+  // ---------- Parent: login with 4-digit PIN ----------
+  async parentLoginWithPin(email: string, pin: string): Promise<{ token: string; user: any }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, email, first_name, last_name, pin_hash, status')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('Invalid email or PIN.');
+    }
+    if (parent.status !== 'active') {
+      throw new UnauthorizedException('Your account is not active.');
+    }
+    const pinHash = (parent as any).pin_hash;
+    if (!pinHash) {
+      throw new UnauthorizedException('Please use the verification code flow to set your PIN first.');
+    }
+    const valid = await bcrypt.compare(pin, pinHash);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid email or PIN.');
+    }
+    const payload = { sub: parent.id, email: parent.email, role: 'parent' };
+    const token = this.jwtService.sign(payload);
+    return {
+      token,
+      user: {
+        id: parent.id,
+        email: parent.email,
+        first_name: parent.first_name,
+        last_name: parent.last_name,
+        role: 'parent',
+      },
+    };
+  }
+
+  async parentSendVerificationCode(email: string): Promise<{ success: true }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const rateLimitKey = `parent:sendcode:${normalizedEmail}`;
+    if (this.isRateLimited(rateLimitKey)) {
+      throw new UnauthorizedException('Too many attempts. Please try again in 15 minutes.');
+    }
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, email, status')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (error || !parent) {
+      this.recordFailedAttempt(rateLimitKey);
+      throw new UnauthorizedException('No parent account found for this email.');
+    }
+    if (parent.status !== 'active') {
+      throw new UnauthorizedException('Your account is not active.');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const cacheKey = `parent:code:${normalizedEmail}`;
+    await this.cacheService.set(cacheKey, { code }, 600, 'auth');
+    try {
+      await this.mailerService.sendVerificationCode(normalizedEmail, code);
+    } catch (err: any) {
+      this.logger.error(`Parent send code failed: ${err?.message || err}`);
+      throw new UnauthorizedException('We could not send the verification email. Please try again later.');
+    }
+    this.clearRateLimit(rateLimitKey);
+    return { success: true };
+  }
+
+  async parentVerifyCode(
+    email: string,
+    code: string,
+  ): Promise<{ verification_token: string; requires_pin_set: boolean; user?: any }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cacheKey = `parent:code:${normalizedEmail}`;
+    const stored = await this.cacheService.get<{ code: string }>(cacheKey, 'auth');
+    if (!stored || stored.code !== code) {
+      throw new UnauthorizedException('Invalid or expired verification code.');
+    }
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, email, first_name, last_name, pin_hash')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('Parent account not found.');
+    }
+    await this.cacheService.delete(cacheKey, 'auth');
+    const verificationToken = randomBytes(24).toString('hex');
+    const tokenKey = `parent:verified:${verificationToken}`;
+    await this.cacheService.set(tokenKey, { email: normalizedEmail, parentId: parent.id }, 300, 'auth');
+    const requiresPinSet = !(parent as any).pin_hash;
+    return {
+      verification_token: verificationToken,
+      requires_pin_set: requiresPinSet,
+      user: requiresPinSet ? { id: parent.id, email: parent.email, first_name: parent.first_name, last_name: parent.last_name } : undefined,
+    };
+  }
+
+  async parentSetPin(verificationToken: string, pin: string): Promise<{ token: string; user: any }> {
+    const tokenKey = `parent:verified:${verificationToken}`;
+    const stored = await this.cacheService.get<{ email: string; parentId: string }>(tokenKey, 'auth');
+    if (!stored) {
+      throw new UnauthorizedException('Invalid or expired verification. Please start over.');
+    }
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, email, first_name, last_name, pin_hash')
+      .eq('id', stored.parentId)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('Parent not found.');
+    }
+    if ((parent as any).pin_hash) {
+      throw new UnauthorizedException('PIN already set. Use Enter PIN to sign in.');
+    }
+    const pinHash = await bcrypt.hash(pin, 10);
+    const { error: updateError } = await this.supabase
+      .from('parents')
+      .update({ pin_hash: pinHash, updated_at: new Date().toISOString() })
+      .eq('id', stored.parentId);
+
+    if (updateError) {
+      throw new UnauthorizedException('Failed to set PIN.');
+    }
+    await this.cacheService.delete(tokenKey, 'auth');
+    const payload = { sub: parent.id, email: parent.email, role: 'parent' };
+    const token = this.jwtService.sign(payload);
+    return {
+      token,
+      user: { id: parent.id, email: parent.email, first_name: parent.first_name, last_name: parent.last_name, role: 'parent' },
+    };
+  }
+
+  async parentSubmitPin(verificationToken: string, pin: string): Promise<{ token: string; user: any }> {
+    const tokenKey = `parent:verified:${verificationToken}`;
+    const stored = await this.cacheService.get<{ email: string; parentId: string }>(tokenKey, 'auth');
+    if (!stored) {
+      throw new UnauthorizedException('Invalid or expired verification. Please start over.');
+    }
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, email, first_name, last_name, pin_hash')
+      .eq('id', stored.parentId)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('Parent not found.');
+    }
+    const valid = await bcrypt.compare(pin, (parent as any).pin_hash);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid PIN.');
+    }
+    await this.cacheService.delete(tokenKey, 'auth');
+    const payload = { sub: parent.id, email: parent.email, role: 'parent' };
+    const token = this.jwtService.sign(payload);
+    return {
+      token,
+      user: { id: parent.id, email: parent.email, first_name: parent.first_name, last_name: parent.last_name, role: 'parent' },
+    };
+  }
+
+  async parentSendRegisterCode(email: string): Promise<{ success: true }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const rateLimitKey = `parent:register:send:${normalizedEmail}`;
+    if (this.isRateLimited(rateLimitKey)) {
+      throw new UnauthorizedException('Too many attempts. Please try again in 15 minutes.');
+    }
+    const { data: existing } = await this.supabase
+      .from('parents')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+
+    if (existing) {
+      throw new UnauthorizedException('An account with this email already exists. Please log in.');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const cacheKey = `parent:register:code:${normalizedEmail}`;
+    await this.cacheService.set(cacheKey, { code }, 600, 'auth');
+    try {
+      await this.mailerService.sendVerificationCode(normalizedEmail, code);
+    } catch (err: any) {
+      this.logger.error(`Parent register send code failed: ${err?.message || err}`);
+      throw new UnauthorizedException('We could not send the verification email. Please try again later.');
+    }
+    this.clearRateLimit(rateLimitKey);
+    return { success: true };
+  }
+
+  async parentVerifyRegisterCode(email: string, code: string): Promise<{ verification_token: string }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cacheKey = `parent:register:code:${normalizedEmail}`;
+    const stored = await this.cacheService.get<{ code: string }>(cacheKey, 'auth');
+    if (!stored || stored.code !== code) {
+      throw new UnauthorizedException('Invalid or expired verification code.');
+    }
+    await this.cacheService.delete(cacheKey, 'auth');
+    const verificationToken = randomBytes(24).toString('hex');
+    const tokenKey = `parent:register:verified:${verificationToken}`;
+    await this.cacheService.set(tokenKey, { email: normalizedEmail }, 300, 'auth');
+    return { verification_token: verificationToken };
+  }
+
+  async parentCompleteRegistration(
+    verificationToken: string,
+    pin: string,
+    first_name: string,
+    last_name: string,
+  ): Promise<{ token: string; user: any }> {
+    const tokenKey = `parent:register:verified:${verificationToken}`;
+    const stored = await this.cacheService.get<{ email: string }>(tokenKey, 'auth');
+    if (!stored) {
+      throw new UnauthorizedException('Invalid or expired verification. Please start over.');
+    }
+    const normalizedEmail = stored.email.trim().toLowerCase();
+    const { data: existing } = await this.supabase
+      .from('parents')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+
+    if (existing) {
+      await this.cacheService.delete(tokenKey, 'auth');
+      throw new UnauthorizedException('An account with this email already exists. Please log in.');
+    }
+    const pinHash = await bcrypt.hash(pin, 10);
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .insert({
+        email: normalizedEmail,
+        first_name: (first_name || '').trim() || 'Parent',
+        last_name: (last_name || '').trim() || 'User',
+        pin_hash: pinHash,
+        status: 'active',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      this.logger.error(`Parent registration insert error: ${JSON.stringify(error)}`);
+      throw new UnauthorizedException('Failed to create account.');
+    }
+    await this.cacheService.delete(tokenKey, 'auth');
+    try {
+      await this.mailerService.sendWelcomeCredentials(normalizedEmail, (first_name || '').trim());
+    } catch (err: any) {
+      this.logger.warn(`Welcome email failed: ${err?.message || err}. Account was created.`);
+    }
+    const payload = { sub: parent.id, email: parent.email, role: 'parent' };
+    const token = this.jwtService.sign(payload);
+    return {
+      token,
+      user: { id: parent.id, email: parent.email, first_name: parent.first_name, last_name: parent.last_name, role: 'parent' },
+    };
+  }
+
+  async parentRequestPinReset(email: string): Promise<{ success: true }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id, status')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('No parent account found for this email.');
+    }
+    if (parent.status !== 'active') {
+      throw new UnauthorizedException('Your account is not active.');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const cacheKey = `parent:pinreset:${normalizedEmail}`;
+    await this.cacheService.set(cacheKey, { code }, 600, 'auth');
+    try {
+      await this.mailerService.sendPinResetCode(normalizedEmail, code);
+    } catch (err: any) {
+      this.logger.error(`PIN reset send failed: ${err?.message || err}`);
+      throw new UnauthorizedException('We could not send the reset code. Please try again later.');
+    }
+    return { success: true };
+  }
+
+  async parentResetPin(email: string, code: string, new_pin: string): Promise<{ success: true }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cacheKey = `parent:pinreset:${normalizedEmail}`;
+    const stored = await this.cacheService.get<{ code: string }>(cacheKey, 'auth');
+    if (!stored || stored.code !== code) {
+      throw new UnauthorizedException('Invalid or expired code.');
+    }
+    const { data: parent, error } = await this.supabase
+      .from('parents')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .single();
+
+    if (error || !parent) {
+      throw new UnauthorizedException('Parent not found.');
+    }
+    const pinHash = await bcrypt.hash(new_pin, 10);
+    const { error: updateError } = await this.supabase
+      .from('parents')
+      .update({ pin_hash: pinHash, updated_at: new Date().toISOString() })
+      .eq('id', parent.id);
+
+    if (updateError) {
+      throw new UnauthorizedException('Failed to reset PIN.');
+    }
+    await this.cacheService.delete(cacheKey, 'auth');
+    return { success: true };
+  }
+
+  async getParentMessages(parentId: string) {
+    const { data, error } = await this.supabase
+      .from('parent_admin_messages')
+      .select('id, sender_type, body, created_at')
+      .eq('parent_id', parentId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      this.logger.error(`getParentMessages: ${error.message}`);
+      throw new UnauthorizedException('Failed to load messages');
+    }
+    return data || [];
+  }
+
+  async sendParentMessage(parentId: string, body: string) {
+    const trimmed = (body || '').trim();
+    if (!trimmed) throw new UnauthorizedException('Message cannot be empty');
+
+    const { data, error } = await this.supabase
+      .from('parent_admin_messages')
+      .insert({
+        parent_id: parentId,
+        sender_type: 'parent',
+        body: trimmed,
+      })
+      .select('id, sender_type, body, created_at')
+      .single();
+
+    if (error) {
+      this.logger.error(`sendParentMessage: ${error.message}`);
+      throw new UnauthorizedException('Failed to send message');
+    }
+    return data;
+  }
+
+  async linkChildToParent(parentId: string, studentUsername: string, relationship?: string) {
+    const username = (studentUsername || '').trim().toLowerCase();
+    if (!username) throw new UnauthorizedException('Student username is required');
+
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id')
+      .eq('username', username)
+      .single();
+
+    if (studentError || !student) {
+      throw new NotFoundException('Student not found with that username');
+    }
+
+    const { error: linkError } = await this.supabase
+      .from('parent_student_links')
+      .insert({
+        parent_id: parentId,
+        student_id: student.id,
+        relationship: relationship?.trim() || null,
+      });
+
+    if (linkError) {
+      if (linkError.code === '23505') {
+        throw new UnauthorizedException('This child is already linked to your account');
+      }
+      this.logger.error(`linkChildToParent: ${linkError.message}`);
+      throw new UnauthorizedException('Failed to link child');
+    }
+
+    return { success: true, message: 'Child linked successfully' };
   }
 
   // ============ SCHOOL LOGIN & PROFILE ============
@@ -1168,49 +1668,78 @@ export class AuthService {
     }
   }
 
+  private isNetworkError(err: any): boolean {
+    const msg = err?.message?.toLowerCase?.() ?? '';
+    return msg.includes('fetch failed') || msg.includes('network') || msg.includes('econnrefused') || err?.name === 'TypeError';
+  }
+
   async getSchoolInfo(schoolId: string) {
-    const { data: school, error: schoolError } = await this.supabase
-      .from('schools')
-      .select(`
-        id,
-        name,
-        code,
-        email,
-        auto_email,
-        location,
-        phone,
-        status,
-        logo_url,
-        created_at,
-        updated_at
-      `)
-      .eq('id', schoolId)
-      .single();
+    let school: any;
+    let schoolError: any;
+    try {
+      const res = await this.supabase
+        .from('schools')
+        .select(`
+          id,
+          name,
+          code,
+          email,
+          auto_email,
+          location,
+          phone,
+          status,
+          logo_url,
+          created_at,
+          updated_at
+        `)
+        .eq('id', schoolId)
+        .single();
+      school = res.data;
+      schoolError = res.error;
+    } catch (err: any) {
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
+    }
 
     if (schoolError || !school) {
+      if (schoolError && this.isNetworkError(schoolError)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
       throw new UnauthorizedException('School not found');
     }
 
     // Fetch classes with student counts
-    const { data: classes } = await this.supabase
-      .from('classes')
-      .select(`
-        id,
-        name,
-        level,
-        description,
-        status,
-        students:students(count)
-      `)
-      .eq('school_id', schoolId)
-      .eq('status', 'active');
+    let classes: any[] = [];
+    let totalStudentsCount: number | null = null;
+    try {
+      const { data: classesData } = await this.supabase
+        .from('classes')
+        .select(`
+          id,
+          name,
+          level,
+          description,
+          status,
+          students:students(count)
+        `)
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      classes = classesData ?? [];
 
-    // Fetch total student count
-    const { data: students } = await this.supabase
-      .from('students')
-      .select('id', { count: 'exact', head: true })
-      .eq('school_id', schoolId)
-      .eq('status', 'active');
+      const { count } = await this.supabase
+        .from('students')
+        .select('*', { count: 'exact', head: true })
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      totalStudentsCount = count ?? 0;
+    } catch (err: any) {
+      if (this.isNetworkError(err)) {
+        throw new ServiceUnavailableException('Database temporarily unavailable. Please try again.');
+      }
+      throw err;
+    }
 
     const classList = (classes || []).map((cls: any) => ({
       id: cls.id,
@@ -1221,11 +1750,49 @@ export class AuthService {
       student_count: cls.students?.[0]?.count || 0,
     }));
 
+    // Overall school performance: mean of best quiz % of all students who have done quizzes
+    let overall_performance_rating: string | null = null;
+    let overall_average_percentage: number = 0;
+    try {
+      const { data: schoolStudents } = await this.supabase
+        .from('students')
+        .select('id')
+        .eq('school_id', schoolId)
+        .eq('status', 'active');
+      const studentIds = (schoolStudents || []).map((s: any) => s.id);
+      if (studentIds.length > 0) {
+        const { data: attempts } = await this.supabase
+          .from('student_quiz_attempts')
+          .select('student_id, percentage')
+          .in('student_id', studentIds)
+          .eq('status', 'completed');
+        const bestPctByStudent: Record<string, number> = {};
+        (attempts || []).forEach((a: any) => {
+          const current = bestPctByStudent[a.student_id] ?? 0;
+          const pct = typeof a.percentage === 'number' ? a.percentage : parseFloat(String(a.percentage ?? 0)) || 0;
+          if (pct > current) bestPctByStudent[a.student_id] = pct;
+        });
+        const percentages = Object.values(bestPctByStudent).filter((p) => p > 0);
+        if (percentages.length > 0) {
+          const mean = percentages.reduce((sum, p) => sum + p, 0) / percentages.length;
+          overall_average_percentage = Math.round(mean * 100) / 100;
+          if (mean <= 25) overall_performance_rating = 'below_expectation';
+          else if (mean <= 50) overall_performance_rating = 'approaching';
+          else if (mean <= 75) overall_performance_rating = 'meeting';
+          else overall_performance_rating = 'exceeding';
+        }
+      }
+    } catch {
+      // leave overall as null/0 on error
+    }
+
     return {
       ...school,
       classes: classList,
-      total_students: students?.length || 0,
+      total_students: totalStudentsCount ?? 0,
       total_classes: classList.length,
+      overall_performance_rating,
+      overall_average_percentage,
     };
   }
 
@@ -1549,6 +2116,167 @@ export class AuthService {
     }));
   }
 
+  // Get student quiz attempts (course > course level > topic > quizzes) with results for parent report
+  async getStudentQuizAttemptsForParent(parentId: string, studentId: string) {
+    const { data: link } = await this.supabase
+      .from('parent_student_links')
+      .select('id')
+      .eq('parent_id', parentId)
+      .eq('student_id', studentId)
+      .single();
+    if (!link) {
+      throw new UnauthorizedException('You do not have access to this student');
+    }
+    const { data: attempts, error } = await this.supabase
+      .from('student_quiz_attempts')
+      .select(`
+        id,
+        student_id,
+        quiz_id,
+        score,
+        max_score,
+        percentage,
+        passed,
+        status,
+        started_at,
+        completed_at,
+        quiz:quizzes(
+          id,
+          title,
+          total_points,
+          passing_score,
+          topic_id,
+          topic:topics(
+            id,
+            name,
+            level_id,
+            level:course_levels(
+              id,
+              name,
+              course_id,
+              course:courses(id, name, code)
+            )
+          )
+        )
+      `)
+      .eq('student_id', studentId)
+      .order('completed_at', { ascending: false });
+
+    if (error) {
+      this.logger.error(`getStudentQuizAttemptsForParent: ${error.message}`);
+      return [];
+    }
+    const levelNorm = (l: any) => (Array.isArray(l) ? l[0] : l);
+    const courseNorm = (c: any) => (Array.isArray(c) ? c[0] : c);
+    return (attempts || []).map((a: any) => {
+      const quiz = a.quiz;
+      const topic = quiz ? levelNorm(quiz.topic) : null;
+      const level = topic ? levelNorm(topic.level) : null;
+      const course = level ? courseNorm(level.course) : null;
+      return {
+        id: a.id,
+        student_id: a.student_id,
+        quiz_id: a.quiz_id,
+        score: a.score,
+        max_score: a.max_score,
+        percentage: a.percentage,
+        passed: a.passed,
+        status: a.status,
+        started_at: a.started_at,
+        completed_at: a.completed_at,
+        quiz: quiz ? {
+          id: quiz.id,
+          title: quiz.title,
+          total_points: quiz.total_points,
+          passing_score: quiz.passing_score,
+          topic_id: quiz.topic_id,
+          topic: topic ? {
+            id: topic.id,
+            name: topic.name,
+            level: level ? { id: level.id, name: level.name, course } : undefined,
+            course,
+          } : undefined,
+        } : undefined,
+      };
+    });
+  }
+
+  // Get student take-away assignments for parent (report)
+  async getStudentTakeAwayForParent(parentId: string, studentId: string) {
+    const { data: link } = await this.supabase
+      .from('parent_student_links')
+      .select('id')
+      .eq('parent_id', parentId)
+      .eq('student_id', studentId)
+      .single();
+    if (!link) {
+      throw new UnauthorizedException('You do not have access to this student');
+    }
+    return this.takeAwayService.getStudentAssignments(studentId);
+  }
+
+  // Get student portfolio for parent (report)
+  async getStudentPortfolioForParent(parentId: string, studentId: string) {
+    const { data: link } = await this.supabase
+      .from('parent_student_links')
+      .select('id')
+      .eq('parent_id', parentId)
+      .eq('student_id', studentId)
+      .single();
+    if (!link) {
+      throw new UnauthorizedException('You do not have access to this student');
+    }
+    return this.studentCoursesService.getStudentPortfolio(studentId);
+  }
+
+  // Get student overview (courses + tutors) for parent (report)
+  async getStudentOverviewForParent(parentId: string, studentId: string) {
+    const { data: link } = await this.supabase
+      .from('parent_student_links')
+      .select('id')
+      .eq('parent_id', parentId)
+      .eq('student_id', studentId)
+      .single();
+    if (!link) {
+      throw new UnauthorizedException('You do not have access to this student');
+    }
+    const courseLevelsPayload = await this.getStudentCourseLevelsForParent(parentId, studentId);
+    const { data: student } = await this.supabase
+      .from('students')
+      .select('id, class_id')
+      .eq('id', studentId)
+      .single();
+    let tutors: { id: string; first_name: string; middle_name?: string; last_name: string; email: string; role?: string }[] = [];
+    if (student?.class_id) {
+      const { data: tutorAssignments } = await this.supabase
+        .from('tutor_class_assignments')
+        .select(`
+          tutor_id,
+          role,
+          tutor:tutors(id, first_name, middle_name, last_name, email)
+        `)
+        .eq('class_id', student.class_id)
+        .eq('status', 'active');
+      if (tutorAssignments?.length) {
+        tutors = tutorAssignments.map((ta: any) => {
+          const t = Array.isArray(ta.tutor) ? ta.tutor[0] : ta.tutor;
+          return {
+            id: t?.id ?? ta.tutor_id,
+            first_name: t?.first_name ?? '',
+            middle_name: t?.middle_name,
+            last_name: t?.last_name ?? '',
+            email: t?.email ?? '',
+            role: ta.role,
+          };
+        });
+      }
+    }
+    return {
+      courses: courseLevelsPayload.courses ?? [],
+      tutors,
+    };
+  }
+
   // Unlink a student from a parent
   async unlinkStudentFromParent(parentId: string, studentId: string) {
     const { error } = await this.supabase
@@ -1563,6 +2291,86 @@ export class AuthService {
     }
 
     return { success: true };
+  }
+
+  /**
+   * List parents who have linked at least one student. For admin dashboard.
+   * Optionally filter by school_id so only parents with a student in that school are returned.
+   */
+  async getParentsForAdmin(schoolId?: string) {
+    let linksQuery = this.supabase
+      .from('parent_student_links')
+      .select(`
+        parent_id,
+        student_id,
+        relationship,
+        parent:parents(id, first_name, last_name, email, status),
+        student:students(
+          id,
+          first_name,
+          last_name,
+          class_id,
+          class:classes(id, name),
+          school_id,
+          school:schools(id, name)
+        )
+      `);
+
+    const { data: links, error } = await linksQuery;
+    if (error) {
+      this.logger.error(`getParentsForAdmin: ${error.message}`);
+      return [];
+    }
+    if (!links || links.length === 0) return [];
+
+    let filtered = links;
+    if (schoolId) {
+      filtered = links.filter((l: any) => {
+        const s = Array.isArray(l.student) ? l.student[0] : l.student;
+        return s?.school_id === schoolId;
+      });
+    }
+
+    const byParent = new Map<
+      string,
+      { parent: any; children: Array<{ name: string; class?: string; school?: string }> }
+    >();
+    for (const link of filtered) {
+      const parent = Array.isArray(link.parent) ? link.parent[0] : link.parent;
+      const student = Array.isArray(link.student) ? link.student[0] : link.student;
+      if (!parent) continue;
+      const pid = parent.id;
+      const childName = student ? [student.first_name, student.last_name].filter(Boolean).join(' ') || 'Student' : 'Student';
+      const classObj = student?.class as { id?: string; name?: string } | { id?: string; name?: string }[] | undefined;
+      const schoolObj = student?.school as { id?: string; name?: string } | { id?: string; name?: string }[] | undefined;
+      const className = Array.isArray(classObj) ? classObj[0]?.name : (classObj as { name?: string })?.name;
+      const schoolName = Array.isArray(schoolObj) ? schoolObj[0]?.name : (schoolObj as { name?: string })?.name;
+
+      if (!byParent.has(pid)) {
+        byParent.set(pid, {
+          parent: { id: parent.id, first_name: parent.first_name, last_name: parent.last_name, email: parent.email, status: parent.status },
+          children: [] as Array<{ name: string; class?: string; school?: string }>,
+        });
+      }
+      const entry = byParent.get(pid)!;
+      const childEntry = { name: childName, class: className, school: schoolName };
+      const seen = new Set(entry.children.map((c) => (c as { name: string; class?: string }).name + '|' + (c as { name: string; class?: string }).class));
+      if (!seen.has(childEntry.name + '|' + childEntry.class)) {
+        entry.children.push(childEntry);
+      }
+    }
+
+    return Array.from(byParent.values()).map(({ parent, children }) => {
+      const schoolNames = [...new Set(children.map((c) => c.school).filter(Boolean))] as string[];
+      return {
+        id: parent.id,
+        name: [parent.first_name, parent.last_name].filter(Boolean).join(' ') || parent.email,
+        email: parent.email,
+        school: schoolNames.length ? schoolNames.join(', ') : undefined,
+        children,
+        status: parent.status || 'active',
+      };
+    });
   }
 
   // ============ RATE LIMITING HELPERS ============
