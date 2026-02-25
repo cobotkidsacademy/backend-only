@@ -23,6 +23,27 @@ export class AllocationController {
     return this.allocationService.getAllocations();
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('class/:classId/performance')
+  async getClassPerformance(@Request() req, @Param('classId') classId: string) {
+    if (req.user.role !== 'admin' && req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only admin or tutor can access this endpoint');
+    }
+    if (req.user.role === 'tutor') {
+      const { data: assignment } = await this.allocationService['supabase']
+        .from('tutor_class_assignments')
+        .select('id')
+        .eq('tutor_id', req.user.sub)
+        .eq('class_id', classId)
+        .eq('status', 'active')
+        .single();
+      if (!assignment) {
+        throw new UnauthorizedException('Tutor does not have access to this class');
+      }
+    }
+    return this.allocationService.getClassPerformanceData(classId);
+  }
+
   @Get('class/:classId')
   async getAllocationByClass(@Param('classId') classId: string) {
     return this.allocationService.getAllocationByClass(classId);
@@ -83,19 +104,18 @@ export class AllocationController {
     return this.allocationService.getAllAssignments();
   }
 
-  @Get('tutor/:tutorId')
-  async getTutorDetails(@Param('tutorId') tutorId: string) {
-    return this.allocationService.getTutorDetails(tutorId);
-  }
-
   @UseGuards(JwtAuthGuard)
   @Get('tutor/me')
   async getMyTutorDetails(@Request() req) {
-    // Only allow tutors to access their own data
     if (req.user.role !== 'tutor') {
       throw new UnauthorizedException('Only tutors can access this endpoint');
     }
     return this.allocationService.getTutorDetails(req.user.sub);
+  }
+
+  @Get('tutor/:tutorId')
+  async getTutorDetails(@Param('tutorId') tutorId: string) {
+    return this.allocationService.getTutorDetails(tutorId);
   }
 
   @UseGuards(JwtAuthGuard)

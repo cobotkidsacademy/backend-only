@@ -1512,41 +1512,6 @@ export class AuthService {
     return { success: true };
   }
 
-  async getParentMessages(parentId: string) {
-    const { data, error } = await this.supabase
-      .from('parent_admin_messages')
-      .select('id, sender_type, body, created_at')
-      .eq('parent_id', parentId)
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      this.logger.error(`getParentMessages: ${error.message}`);
-      throw new UnauthorizedException('Failed to load messages');
-    }
-    return data || [];
-  }
-
-  async sendParentMessage(parentId: string, body: string) {
-    const trimmed = (body || '').trim();
-    if (!trimmed) throw new UnauthorizedException('Message cannot be empty');
-
-    const { data, error } = await this.supabase
-      .from('parent_admin_messages')
-      .insert({
-        parent_id: parentId,
-        sender_type: 'parent',
-        body: trimmed,
-      })
-      .select('id, sender_type, body, created_at')
-      .single();
-
-    if (error) {
-      this.logger.error(`sendParentMessage: ${error.message}`);
-      throw new UnauthorizedException('Failed to send message');
-    }
-    return data;
-  }
-
   async linkChildToParent(parentId: string, studentUsername: string, relationship?: string) {
     const username = (studentUsername || '').trim().toLowerCase();
     if (!username) throw new UnauthorizedException('Student username is required');

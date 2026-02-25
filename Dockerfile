@@ -1,5 +1,5 @@
-# Build stage
-FROM node:20-slim AS builder
+# Build stage - use linux/amd64 for consistent Railway builds
+FROM --platform=linux/amd64 node:20-slim AS builder
 
 WORKDIR /app
 
@@ -14,15 +14,17 @@ RUN npm ci
 # Copy source
 COPY src ./src
 
-# Build the application
+# Build the application (increase memory if build fails on Railway)
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build
 
 # Production stage
-FROM node:20-slim AS runner
+FROM --platform=linux/amd64 node:20-slim AS runner
 
 WORKDIR /app
 
 ENV NODE_ENV=production
+# Railway sets PORT at runtime; default for local Docker
 ENV PORT=3001
 
 # Copy package files
@@ -34,6 +36,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist
 
+# Create uploads dir so static middleware has a valid path
+RUN mkdir -p uploads
+
 EXPOSE 3001
 
+# Railway injects PORT; app reads process.env.PORT in main.ts
 CMD ["node", "dist/main.js"]

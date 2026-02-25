@@ -21,7 +21,23 @@ try {
   console.warn('⚠️  Compression middleware not installed. Install with: npm install compression @types/compression');
 }
 
+/** Fail fast in production if required Railway env vars are missing (avoids vague "refused" deploy). */
+function assertProductionEnv() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const missing: string[] = [];
+  if (!process.env.SUPABASE_URL) missing.push('SUPABASE_URL');
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
+  if (missing.length === 0) return;
+  console.error('❌ Backend refused to start: missing required environment variables.');
+  console.error('   Set these in Railway → your backend service → Variables:');
+  missing.forEach((v) => console.error('   - ' + v));
+  console.error('   See backend/RAILWAY_DEPLOYMENT.md for details.');
+  process.exit(1);
+}
+
 async function bootstrap() {
+  assertProductionEnv();
   // Set timezone to Africa/Nairobi for all date operations
   process.env.TZ = 'Africa/Nairobi';
   

@@ -29,7 +29,6 @@ import {
   ParentLoginWithPinDto,
   ParentCompleteRegistrationDto,
   ResetParentPinDto,
-  ParentMessageDto,
   LinkChildDto,
 } from './dto/parent-verification.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
@@ -225,24 +224,6 @@ export class AuthController {
   @Get('parent/me')
   async getParentInfo(@Request() req) {
     return this.authService.getParentInfo(req.user.sub);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('parent/messages')
-  async getParentMessages(@Request() req) {
-    if (req.user.role !== 'parent') {
-      throw new UnauthorizedException('Only parents can view messages');
-    }
-    return this.authService.getParentMessages(req.user.sub);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('parent/messages')
-  async sendParentMessage(@Request() req, @Body() dto: ParentMessageDto) {
-    if (req.user.role !== 'parent') {
-      throw new UnauthorizedException('Only parents can send messages');
-    }
-    return this.authService.sendParentMessage(req.user.sub, dto.body);
   }
 
   @UseGuards(JwtAuthGuard)

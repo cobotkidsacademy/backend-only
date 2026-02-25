@@ -1353,44 +1353,106 @@ export class AllocationService {
       quizzes = quizzesData || [];
     }
 
-    // Get student quiz best scores
     const studentIds = (students || []).map((s: any) => s.id);
-    const quizIds = quizzes.map((q: any) => q.id);
-    let bestScores: any[] = [];
-    if (studentIds.length > 0 && quizIds.length > 0) {
-      const { data: scoresData, error: scoresError } = await this.supabase
-        .from('student_quiz_best_scores')
-        .select('student_id, quiz_id, best_percentage, best_score')
-        .in('student_id', studentIds)
-        .in('quiz_id', quizIds);
 
-      if (scoresError) {
-        throw new BadRequestException(scoresError.message);
+    // Include quizzes that any of these students have attempted (so we don't miss data)
+    if (studentIds.length > 0) {
+      const { data: attemptedQuizRows } = await this.supabase
+        .from('student_quiz_attempts')
+        .select('quiz_id')
+        .in('student_id', studentIds)
+        .eq('status', 'completed');
+      const attemptedQuizIds = [...new Set((attemptedQuizRows || []).map((r: any) => r.quiz_id).filter(Boolean))];
+      const existingQuizIds = new Set(quizzes.map((q: any) => q.id));
+      const missingQuizIds = attemptedQuizIds.filter((id) => !existingQuizIds.has(id));
+      if (missingQuizIds.length > 0) {
+        const { data: extraQuizzes } = await this.supabase
+          .from('quizzes')
+          .select('id, title, topic_id, passing_score, total_points')
+          .in('id', missingQuizIds)
+          .eq('status', 'active');
+        const extraTopicIds = [...new Set((extraQuizzes || []).map((q: any) => q.topic_id).filter(Boolean))];
+        const existingTopicIds = new Set((topics || []).map((t: any) => t.id));
+        const needTopicIds = extraTopicIds.filter((id) => !existingTopicIds.has(id));
+        if (needTopicIds.length > 0) {
+          const { data: extraTopics } = await this.supabase
+            .from('topics')
+            .select('id, name, order_index, level_id')
+            .in('id', needTopicIds)
+            .eq('status', 'active');
+          if (extraTopics?.length) {
+            topics = [...(topics || []), ...extraTopics];
+          }
+        }
+        if (extraQuizzes?.length) {
+          quizzes = [...quizzes, ...extraQuizzes];
+        }
       }
-      bestScores = scoresData || [];
     }
 
-    // Create maps for quick lookup
+    const quizIds = quizzes.map((q: any) => q.id);
+    const scoreMap = new Map<string, { best_score: number; percentage: number; score_category: string | null }>();
+    if (studentIds.length > 0 && quizIds.length > 0) {
+      // Fetch score_category from student_quiz_attempts (050_add_cbc_grade...)
+      const { data: attemptsData, error: attemptsError } = await this.supabase
+        .from('student_quiz_attempts')
+        .select('student_id, quiz_id, score, percentage, score_category')
+        .in('student_id', studentIds)
+        .in('quiz_id', quizIds)
+        .eq('status', 'completed');
+
+      if (attemptsError) {
+        throw new BadRequestException(attemptsError.message);
+      }
+      const cbcGradeFromPct = (pct: number): string | null => {
+        if (pct == null || Number.isNaN(pct)) return null;
+        if (pct <= 25) return 'below_expectation';
+        if (pct <= 50) return 'approaching';
+        if (pct <= 75) return 'meeting';
+        return 'exceeding';
+      };
+      const attempts = attemptsData || [];
+      attempts.forEach((a: any) => {
+        const key = `${a.student_id}_${a.quiz_id}`;
+        const existing = scoreMap.get(key);
+        const pct = Number(a.percentage ?? 0);
+        const score = Number(a.score ?? 0);
+        const category = a.score_category ?? cbcGradeFromPct(pct);
+        if (!existing || pct > existing.percentage) {
+          scoreMap.set(key, {
+            best_score: score,
+            percentage: pct,
+            score_category: category,
+          });
+        }
+      });
+    }
+
+    const cbcGradeFromPct = (pct: number): string | null => {
+      if (pct == null || Number.isNaN(pct)) return null;
+      if (pct <= 25) return 'below_expectation';
+      if (pct <= 50) return 'approaching';
+      if (pct <= 75) return 'meeting';
+      return 'exceeding';
+    };
+    const overallByStudent = new Map<string, { average_percentage: number; score_category: string | null }>();
+    (students || []).forEach((s: any) => {
+      const percentages: number[] = [];
+      scoreMap.forEach((val, key) => {
+        if (key.startsWith(`${s.id}_`)) percentages.push(val.percentage);
+      });
+      const avg = percentages.length > 0 ? percentages.reduce((a, b) => a + b, 0) / percentages.length : 0;
+      overallByStudent.set(s.id, {
+        average_percentage: Math.round(avg * 100) / 100,
+        score_category: percentages.length > 0 ? cbcGradeFromPct(avg) : null,
+      });
+    });
+
     const quizMap = new Map();
     quizzes.forEach((quiz: any) => {
       quizMap.set(quiz.id, quiz);
     });
 
-    const scoreMap = new Map();
-    bestScores.forEach((score: any) => {
-      const key = `${score.student_id}_${score.quiz_id}`;
-      scoreMap.set(key, score);
-    });
-
-    // Helper function to categorize score
-    const categorizeScore = (percentage: number): 'BE' | 'AP' | 'ME' | 'EE' => {
-      if (percentage <= 25) return 'BE';
-      if (percentage <= 50) return 'AP';
-      if (percentage <= 75) return 'ME';
-      return 'EE';
-    };
-
-    // Build result structure
     const result: any[] = [];
     const studentMap = new Map();
 
@@ -1415,21 +1477,25 @@ export class AllocationService {
         });
       }
 
-      // Get topics for this student's enrolled course levels
       const studentClassId = student.class_id;
       const studentCourseLevels = filteredAssignments
         .filter((a: any) => {
-          const classData = Array.isArray(a.class) ? a.class[0] : a.class;
-          return classData?.id === studentClassId;
+          const c = Array.isArray(a.class) ? a.class[0] : a.class;
+          return c?.id === studentClassId;
         })
         .map((a: any) => {
           const level = Array.isArray(a.course_level) ? a.course_level[0] : a.course_level;
-          return level.id;
-        });
+          return level?.id;
+        })
+        .filter(Boolean);
 
+      // Include topics from enrolled levels + topics where this student has an attempt
       const studentTopics = (topics || []).filter((t: any) => {
         const level = Array.isArray(t.level) ? t.level[0] : t.level;
-        return studentCourseLevels.includes(level?.id);
+        const levelId = level?.id ?? t.level_id;
+        if (studentCourseLevels.includes(levelId)) return true;
+        const hasAttempt = quizzes.some((q: any) => q.topic_id === t.id && scoreMap.get(`${student.id}_${q.id}`));
+        return !!hasAttempt;
       });
 
       // Build topic results
@@ -1442,16 +1508,20 @@ export class AllocationService {
           const scoreKey = `${student.id}_${quiz.id}`;
           const score = scoreMap.get(scoreKey);
           if (score) {
-            const percentage = Number(score.best_percentage || 0);
+            const percentage = score.percentage;
             const passed = percentage >= (quiz.passing_score || 0);
             quizResults.push({
+              student_id: student.id,
+              topic_id: topic.id,
               quiz_id: quiz.id,
               passed: passed,
               percentage: percentage,
-              category: categorizeScore(percentage),
+              category: score.score_category,
             });
           } else {
             quizResults.push({
+              student_id: student.id,
+              topic_id: topic.id,
               quiz_id: quiz.id,
               passed: false,
               percentage: 0,
@@ -1473,10 +1543,209 @@ export class AllocationService {
         first_name: student.first_name,
         last_name: student.last_name,
         topics: topicResults,
+        overall_average_percentage: (overallByStudent.get(student.id) ?? {}).average_percentage ?? 0,
+        overall_score_category: (overallByStudent.get(student.id) ?? {}).score_category ?? null,
       });
     });
 
     return Array.from(studentMap.values());
+  }
+
+  /**
+   * Class performance data for admin report (same structure as getTutorPerformanceData).
+   * Returns one class group with students and their topic/quiz results (score_category from student_quiz_attempts).
+   */
+  async getClassPerformanceData(classId: string) {
+    const { data: classRow, error: classError } = await this.supabase
+      .from('classes')
+      .select('id, name, level, school_id, school:schools(id, name, code)')
+      .eq('id', classId)
+      .single();
+    if (classError || !classRow) {
+      throw new BadRequestException('Class not found');
+    }
+    const schoolData = Array.isArray((classRow as any).school) ? (classRow as any).school[0] : (classRow as any).school;
+    const students = await this.supabase
+      .from('students')
+      .select('id, username, first_name, last_name, class_id, school_id')
+      .eq('class_id', classId)
+      .eq('status', 'active')
+      .order('first_name');
+    const studentsData = students.data || [];
+    const { data: courseLevelAssignments } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('course_level:course_levels(id, name, level_number, course:courses(id, name))')
+      .eq('class_id', classId)
+      .eq('enrollment_status', 'enrolled');
+    const courseLevelIds = (courseLevelAssignments || []).map((a: any) => {
+      const level = Array.isArray(a.course_level) ? a.course_level[0] : a.course_level;
+      return level?.id;
+    }).filter(Boolean);
+    let topics: any[] = [];
+    if (courseLevelIds.length > 0) {
+      const { data: topicsData } = await this.supabase
+        .from('topics')
+        .select('id, name, order_index, level_id')
+        .in('level_id', courseLevelIds)
+        .eq('status', 'active')
+        .order('order_index', { ascending: true });
+      topics = topicsData || [];
+    }
+    const topicIds = topics.map((t: any) => t.id);
+    let quizzes: any[] = [];
+    if (topicIds.length > 0) {
+      const { data: quizzesData } = await this.supabase
+        .from('quizzes')
+        .select('id, title, topic_id, passing_score, total_points')
+        .in('topic_id', topicIds)
+        .eq('status', 'active');
+      quizzes = quizzesData || [];
+    }
+    const studentIds = studentsData.map((s: any) => s.id);
+
+    // Include quizzes that students in this class have attempted (so we don't miss data when attempts
+    // are for topics outside the class's enrolled course levels)
+    if (studentIds.length > 0) {
+      const { data: attemptedQuizRows } = await this.supabase
+        .from('student_quiz_attempts')
+        .select('quiz_id')
+        .in('student_id', studentIds)
+        .eq('status', 'completed');
+      const attemptedQuizIds = [...new Set((attemptedQuizRows || []).map((r: any) => r.quiz_id).filter(Boolean))];
+      const existingQuizIds = new Set(quizzes.map((q: any) => q.id));
+      const missingQuizIds = attemptedQuizIds.filter((id) => !existingQuizIds.has(id));
+      if (missingQuizIds.length > 0) {
+        const { data: extraQuizzes } = await this.supabase
+          .from('quizzes')
+          .select('id, title, topic_id, passing_score, total_points')
+          .in('id', missingQuizIds)
+          .eq('status', 'active');
+        const extraTopicIds = [...new Set((extraQuizzes || []).map((q: any) => q.topic_id).filter(Boolean))];
+        const existingTopicIds = new Set(topics.map((t: any) => t.id));
+        const needTopicIds = extraTopicIds.filter((id) => !existingTopicIds.has(id));
+        if (needTopicIds.length > 0) {
+          const { data: extraTopics } = await this.supabase
+            .from('topics')
+            .select('id, name, order_index, level_id')
+            .in('id', needTopicIds)
+            .eq('status', 'active');
+          if (extraTopics?.length) {
+            topics = [...topics, ...extraTopics].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+          }
+        }
+        if (extraQuizzes?.length) {
+          quizzes = [...quizzes, ...extraQuizzes];
+        }
+      }
+    }
+
+    const quizIds = quizzes.map((q: any) => q.id);
+    const scoreMap = new Map<string, { best_score: number; percentage: number; score_category: string | null }>();
+    if (studentIds.length > 0 && quizIds.length > 0) {
+      // score_category from student_quiz_attempts (migration 050_add_cbc_grade_to_student_quiz_attempts.sql:
+      // trigger + student_quiz_attempt_cbc_grade(percentage) → below_expectation|approaching|meeting|exceeding)
+      const { data: attemptsData } = await this.supabase
+        .from('student_quiz_attempts')
+        .select('student_id, quiz_id, score, percentage, score_category')
+        .in('student_id', studentIds)
+        .in('quiz_id', quizIds)
+        .eq('status', 'completed');
+      const cbcGradeFromPct = (pct: number): string | null => {
+        if (pct == null || Number.isNaN(pct)) return null;
+        if (pct <= 25) return 'below_expectation';
+        if (pct <= 50) return 'approaching';
+        if (pct <= 75) return 'meeting';
+        return 'exceeding';
+      };
+      (attemptsData || []).forEach((a: any) => {
+        const key = `${a.student_id}_${a.quiz_id}`;
+        const existing = scoreMap.get(key);
+        const pct = Number(a.percentage ?? 0);
+        const score = Number(a.score ?? 0);
+        const category = a.score_category ?? cbcGradeFromPct(pct);
+        if (!existing || pct > existing.percentage) {
+          scoreMap.set(key, {
+            best_score: score,
+            percentage: pct,
+            score_category: category,
+          });
+        }
+      });
+    }
+    const topicResultsByStudent = new Map<string, any[]>();
+    studentsData.forEach((student: any) => {
+      // Use all topics (enrolled + any with attempts by class students) so we show every attempt
+      const studentTopics = topics;
+      const topicResults: any[] = [];
+      studentTopics.forEach((topic: any) => {
+        const topicQuizzes = quizzes.filter((q: any) => q.topic_id === topic.id);
+        const quizResults: any[] = [];
+        topicQuizzes.forEach((quiz: any) => {
+          const scoreKey = `${student.id}_${quiz.id}`;
+          const score = scoreMap.get(scoreKey);
+          if (score) {
+            quizResults.push({
+              student_id: student.id,
+              topic_id: topic.id,
+              quiz_id: quiz.id,
+              passed: score.percentage >= (quiz.passing_score || 0),
+              percentage: score.percentage,
+              category: score.score_category,
+            });
+          } else {
+            quizResults.push({
+              student_id: student.id,
+              topic_id: topic.id,
+              quiz_id: quiz.id,
+              passed: false,
+              percentage: 0,
+              category: null,
+            });
+          }
+        });
+        topicResults.push({ topic_id: topic.id, topic_name: topic.name, quizzes: quizResults });
+      });
+      topicResultsByStudent.set(student.id, topicResults);
+    });
+
+    const cbcGradeFromPct = (pct: number): string | null => {
+      if (pct == null || Number.isNaN(pct)) return null;
+      if (pct <= 25) return 'below_expectation';
+      if (pct <= 50) return 'approaching';
+      if (pct <= 75) return 'meeting';
+      return 'exceeding';
+    };
+    const overallByStudent = new Map<string, { average_percentage: number; score_category: string | null }>();
+    studentsData.forEach((s: any) => {
+      const percentages: number[] = [];
+      scoreMap.forEach((val, key) => {
+        if (key.startsWith(`${s.id}_`)) percentages.push(val.percentage);
+      });
+      const average_percentage = percentages.length > 0
+        ? percentages.reduce((a, b) => a + b, 0) / percentages.length
+        : 0;
+      overallByStudent.set(s.id, {
+        average_percentage: Math.round(average_percentage * 100) / 100,
+        score_category: percentages.length > 0 ? cbcGradeFromPct(average_percentage) : null,
+      });
+    });
+
+    return [{
+      school: schoolData ? { id: schoolData.id, name: schoolData.name, code: schoolData.code } : null,
+      class: { id: classRow.id, name: classRow.name, level: classRow.level },
+      students: studentsData.map((s: any) => {
+        const overall = overallByStudent.get(s.id);
+        return {
+          id: s.id,
+          username: s.username,
+          first_name: s.first_name,
+          last_name: s.last_name,
+          topics: topicResultsByStudent.get(s.id) || [],
+          overall_average_percentage: overall?.average_percentage ?? 0,
+          overall_score_category: overall?.score_category ?? null,
+        };
+      }),
+    }];
   }
 
   async getAssignmentsByClass(classId: string): Promise<TutorAssignment[]> {

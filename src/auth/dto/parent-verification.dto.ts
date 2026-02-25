@@ -66,11 +66,6 @@ export class ResetParentPinDto {
   new_pin: string;
 }
 
-export class ParentMessageDto {
-  @IsString()
-  body: string;
-}
-
 export class LinkChildDto {
   @IsString()
   student_username: string;

@@ -1,5 +1,11 @@
 # Railway Deployment Guide - CORS Configuration
 
+**Deployment failed or "refused"?**  
+1. Open Railway → your **backend** service → **Deployments** → open the latest deploy.  
+2. Check **Build logs**: if `npm run build` or Docker build failed, fix those errors first.  
+3. Check **Deploy / Runtime logs**: if you see `Backend refused to start: missing required environment variables` and a list like `SUPABASE_URL`, then add them: **Variables** tab → add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `JWT_SECRET`.  
+4. Full checklist: **[If deployment fails or is "refused"](#if-deployment-fails-or-is-refused)** below.
+
 ## Quick Setup for Railway
 
 ### Step 1: Set Environment Variables on Railway
@@ -105,10 +111,37 @@ The configuration handles OPTIONS requests automatically. If issues persist:
 |----------|----------|---------|-------------|
 | `NODE_ENV` | Yes | `production` | Environment mode |
 | `ALLOWED_ORIGINS` | Recommended | `http://localhost:3000,https://app.com` | Comma-separated allowed origins |
-| `PORT` | Auto | `3001` | Railway sets this automatically |
-| `SUPABASE_URL` | Yes | `https://xxx.supabase.co` | Your Supabase URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | `eyJ...` | Your Supabase service role key |
-| `JWT_SECRET` | Yes | `your-secret-key` | JWT signing secret |
+| `PORT` | Auto | (Railway sets) | Railway sets this automatically; do not override |
+| `SUPABASE_URL` | **Required** | `https://xxx.supabase.co` | Your Supabase URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Required** | `eyJ...` | Your Supabase service role key |
+| `JWT_SECRET` | **Required** | `your-secret-key` | JWT signing secret |
+
+If any of the **Required** variables are missing, the app will exit on startup and the deployment will appear failed or "refused".
+
+## If deployment fails or is "refused"
+
+1. **Check build logs**  
+   In Railway: your service → **Deployments** → select the failed deploy → **View build logs**. Look for:
+   - `npm ci` or `npm run build` errors (e.g. TypeScript, missing deps).
+   - Wrong paths (e.g. "Cannot find module" for `dist/main.js`).
+
+2. **Check runtime logs**  
+   If the image builds but the service never becomes healthy: **Deployments** → **View logs**. Look for:
+   - `Missing Supabase configuration: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY` → set these in the service **Variables**.
+   - `Missing Supabase configuration` or JWT errors → add all required env vars (see table above).
+
+3. **Required variables for startup**  
+   The backend **must** have these set in Railway **Variables** or the process will exit immediately:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `JWT_SECRET`  
+   Optionally: `NODE_ENV=production`, `ALLOWED_ORIGINS=...`.
+
+4. **Using the Dockerfile**  
+   Ensure the service is set to use the Dockerfile (in **Settings** or `railway.json`): `"builder": "DOCKERFILE"`, `"dockerfilePath": "Dockerfile"`. Root of the repo for the backend should be the backend folder (or set **Root Directory** to the backend folder if the repo is monorepo).
+
+5. **Build runs in backend folder**  
+   If your repo has both frontend and backend, set Railway service **Root Directory** to the backend folder (e.g. `backend`) so the Dockerfile and `package.json` are found.
 
 ## Production Checklist
 
