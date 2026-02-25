@@ -1,5 +1,5 @@
-# Build stage - use linux/amd64 for consistent Railway builds
-FROM --platform=linux/amd64 node:20-slim AS builder
+# Build stage
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build
 
 # Production stage
-FROM --platform=linux/amd64 node:20-slim AS runner
+FROM node:20-slim AS runner
 
 WORKDIR /app
 
