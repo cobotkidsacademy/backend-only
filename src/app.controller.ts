@@ -18,6 +18,16 @@ export class AppController {
 
   @Get('health')
   healthCheck() {
+    return this.healthResponse();
+  }
+
+  /** Alias for health – some proxies/Railway check /i/health */
+  @Get('i/health')
+  healthCheckAlias() {
+    return this.healthResponse();
+  }
+
+  private healthResponse() {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
