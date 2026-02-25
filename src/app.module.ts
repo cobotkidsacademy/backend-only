@@ -22,6 +22,7 @@ import { FormsModule } from './forms/forms.module';
 import { TakeAwayModule } from './take-away/take-away.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { SelfClassCodeModule } from './self-class-code/self-class-code.module';
+import { KpiModule } from './kpi/kpi.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { SelfClassCodeModule } from './self-class-code/self-class-code.module';
     TakeAwayModule,
     MessagingModule,
     SelfClassCodeModule,
+    KpiModule,
   ],
   controllers: [AppController],
   providers: [AppService, KeepAliveService],
