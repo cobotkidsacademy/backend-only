@@ -1,109 +1,66 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Resend } from 'resend';
-import * as nodemailer from 'nodemailer';
-import type { Transporter } from 'nodemailer';
+import { MailtrapClient } from 'mailtrap';
 
 @Injectable()
 export class MailerService implements OnModuleInit {
   private readonly logger = new Logger(MailerService.name);
-  private transporter: Transporter | null = null;
+  private client: MailtrapClient | null = null;
   private fromAddress: string;
-  /** When set, use Resend (HTTPS) instead of SMTP. Required on Railway/Render where outbound SMTP ports are blocked. */
-  private resend: Resend | null = null;
+  private fromName = 'COBOT Parent Portal';
 
   constructor(private configService: ConfigService) {
     this.fromAddress =
-      this.configService.get<string>('MAIL_FROM') ||
-      this.configService.get<string>('SMTP_USER') ||
+      this.configService.get<string>('MAIL_FROM')?.trim() ||
       'noreply@cobotkids.edutech';
-
-    const resendKey = (this.configService.get<string>('RESEND_API_KEY') || '').trim();
-    if (resendKey) {
-      this.resend = new Resend(resendKey);
-      this.logger.log(
-        'Mailer initialized with Resend (HTTPS). Parent verification emails will be sent. Use on Railway/Render where SMTP ports are blocked.',
-      );
-      return;
-    }
-
-    // Support both string and number from env (hosting platforms often give strings)
-    const portRaw = this.configService.get<string>('SMTP_PORT') ?? this.configService.get<number>('SMTP_PORT');
-    const port = portRaw != null ? Number(portRaw) : 587;
-    const host = (this.configService.get<string>('SMTP_HOST') || '').trim();
-    const user = (this.configService.get<string>('SMTP_USER') || '').trim();
-    const pass = (this.configService.get<string>('SMTP_PASS') || '').trim().replace(/\s/g, ''); // remove spaces (e.g. App Password)
-
-    if (host && user && pass) {
-      const isGmail = host.toLowerCase().includes('gmail');
-      const connectionTimeout = 20_000; // 20s so requests fail fast instead of ~2 min
-      const greetingTimeout = 10_000;
-      this.transporter = nodemailer.createTransport(
-        isGmail
-          ? {
-              service: 'gmail',
-              auth: { user, pass },
-              connectionTimeout,
-              greetingTimeout,
-            }
-          : {
-              host,
-              port,
-              secure: port === 465,
-              requireTLS: port === 587,
-              auth: { user, pass },
-              connectionTimeout,
-              greetingTimeout,
-            },
-      );
-      this.logger.log(`Mailer initialized with SMTP (${host}:${port}). Parent verification emails will be sent.`);
-    } else {
-      this.logger.warn(
-        `Email not configured. Set RESEND_API_KEY (recommended on Railway) or SMTP_HOST, SMTP_USER, SMTP_PASS. See backend/EMAIL_SETUP.md.`,
-      );
-    }
   }
 
   async onModuleInit() {
-    if (this.resend) return;
-    if (!this.transporter) return;
-    try {
-      await this.transporter.verify();
-      this.logger.log('SMTP connection verified. Ready to send parent verification emails.');
-    } catch (err: any) {
-      this.logger.error(
-        `SMTP verification failed. Parent verification emails may not send. Error: ${err?.message || err}. ` +
-          'Use RESEND_API_KEY instead (see backend/EMAIL_SETUP.md) when hosting on Railway/Render where SMTP is often blocked.',
+    const token = (this.configService.get<string>('MAILTRAP_API_TOKEN') || '').trim();
+    if (!token) {
+      this.logger.warn(
+        'Email not configured. Set MAILTRAP_API_TOKEN (and MAILTRAP_TEST_INBOX_ID for testing). See backend/EMAIL_SETUP.md.',
+      );
+      return;
+    }
+    const testInboxIdRaw = (this.configService.get<string>('MAILTRAP_TEST_INBOX_ID') ?? this.configService.get<number>('MAILTRAP_TEST_INBOX_ID'));
+    const testInboxId = testInboxIdRaw != null ? Number(testInboxIdRaw) : undefined;
+    const useSandbox = testInboxId != null && !Number.isNaN(testInboxId);
+    if (useSandbox) {
+      this.client = new MailtrapClient({ token, sandbox: true, testInboxId });
+      this.logger.log(
+        `Mailer initialized with Mailtrap Sandbox (testing). Emails go to your testing inbox (ID ${testInboxId}), not to real recipients.`,
+      );
+    } else {
+      this.client = new MailtrapClient({ token });
+      this.logger.log(
+        'Mailer initialized with Mailtrap Email API (sending). Parent verification emails will be sent to real addresses.',
       );
     }
   }
 
   private async sendMail(toEmail: string, subject: string, html: string, text: string): Promise<void> {
-    const fromDisplay = 'COBOT Parent Portal';
-    const fromAddr = this.fromAddress;
-
-    if (this.resend) {
-      const { error } = await this.resend.emails.send({
-        from: `${fromDisplay} <onboarding@resend.dev>`,
-        to: [toEmail],
+    if (!this.client) {
+      throw new Error('Email is not configured. Set MAILTRAP_API_TOKEN (see backend/EMAIL_SETUP.md).');
+    }
+    const from = { name: this.fromName, email: this.fromAddress };
+    try {
+      await this.client.send({
+        from,
+        to: [{ email: toEmail }],
         subject,
-        html,
         text,
+        html,
       });
-      if (error) throw new Error(error.message);
-      return;
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const status = err?.response?.status ?? err?.status;
+      const body = err?.response?.data ?? err?.body;
+      this.logger.warn(
+        `Mailtrap send failed: ${msg}. from=${from.email}${status != null ? ` status=${status}` : ''}${body ? ` body=${JSON.stringify(body)}` : ''}. See backend/EMAIL_SETUP.md §6 if Unauthorized.`,
+      );
+      throw err;
     }
-
-    if (!this.transporter) {
-      throw new Error('Email is not configured. Set RESEND_API_KEY or SMTP_* (see backend/EMAIL_SETUP.md).');
-    }
-    await this.transporter.sendMail({
-      from: `"${fromDisplay}" <${fromAddr}>`,
-      to: toEmail,
-      subject,
-      text,
-      html,
-    });
   }
 
   async sendVerificationCode(toEmail: string, code: string): Promise<void> {
@@ -153,8 +110,8 @@ export class MailerService implements OnModuleInit {
       this.logger.log(`Verification email sent to ${toEmail}`);
     } catch (err: any) {
       const msg = err?.message || String(err);
-      const code = err?.code ?? err?.responseCode;
-      this.logger.error(`Failed to send verification email to ${toEmail}: ${msg}${code ? ` (code=${code})` : ''}`);
+      const codeErr = err?.code ?? err?.responseCode;
+      this.logger.error(`Failed to send verification email to ${toEmail}: ${msg}${codeErr ? ` (code=${codeErr})` : ''}`);
       throw err;
     }
   }

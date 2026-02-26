@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger, NotFoundException, Inject, forwardRef, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, NotFoundException, BadRequestException, Inject, forwardRef, ServiceUnavailableException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
@@ -1298,6 +1298,8 @@ export class AuthService {
         first_name,
         last_name,
         email,
+        phone,
+        profile_image_url,
         status,
         created_at,
         updated_at
@@ -1341,6 +1343,25 @@ export class AuthService {
       ...parent,
       children: children.length > 0 ? children : undefined,
     };
+  }
+
+  async updateParentProfile(
+    parentId: string,
+    dto: { first_name?: string; last_name?: string; phone?: string; profile_image_url?: string },
+  ) {
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (dto.first_name !== undefined) updates.first_name = dto.first_name;
+    if (dto.last_name !== undefined) updates.last_name = dto.last_name;
+    if (dto.phone !== undefined) updates.phone = dto.phone;
+    if (dto.profile_image_url !== undefined) updates.profile_image_url = dto.profile_image_url;
+    const { data, error } = await this.supabase
+      .from('parents')
+      .update(updates)
+      .eq('id', parentId)
+      .select()
+      .single();
+    if (error) throw new BadRequestException(error.message);
+    return data;
   }
 
   // ---------- Parent: login with 4-digit PIN ----------

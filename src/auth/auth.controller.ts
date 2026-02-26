@@ -38,6 +38,7 @@ import {
   ResetParentPinDto,
   LinkChildDto,
 } from './dto/parent-verification.dto';
+import { UpdateParentProfileDto } from './dto/update-parent-profile.dto';
 import { UpdateAdminSettingsDto, ChangeAdminPasswordDto } from './dto/admin-settings.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -308,6 +309,43 @@ export class AuthController {
   @Get('parent/me')
   async getParentInfo(@Request() req) {
     return this.authService.getParentInfo(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('parent/me/profile')
+  async updateParentProfile(@Request() req, @Body() dto: UpdateParentProfileDto) {
+    if (req.user.role !== 'parent') throw new UnauthorizedException('Only parents can update profile');
+    return this.authService.updateParentProfile(req.user.sub, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('parent/upload-photo')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 2 * 1024 * 1024 },
+      fileFilter: (_, file, cb) => {
+        const allowed = /\.(jpg|jpeg|png|gif|webp|svg)$/i;
+        if (allowed.test(file.originalname)) cb(null, true);
+        else cb(new BadRequestException('Invalid file type. Use jpg, png, gif, webp or svg.'), false);
+      },
+    }),
+  )
+  async uploadParentPhoto(
+    @UploadedFile() file: { buffer: Buffer; originalname: string },
+    @Request() req,
+  ) {
+    if (req.user.role !== 'parent') throw new UnauthorizedException('Only parents can upload photo');
+    if (!file) throw new BadRequestException('No file provided');
+    const parentId = req.user.sub;
+    const uploadDir = path.join(process.cwd(), 'uploads', 'parents', parentId);
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    const ext = path.extname(file.originalname) || '.png';
+    const safeName = `profile-${Date.now()}${ext}`;
+    const filePath = path.join(uploadDir, safeName);
+    fs.writeFileSync(filePath, file.buffer);
+    const baseUrl = this.configService.get<string>('API_BASE_URL') || 'http://localhost:3001';
+    const url = `${baseUrl.replace(/\/$/, '')}/uploads/parents/${parentId}/${safeName}`;
+    return { url };
   }
 
   @UseGuards(JwtAuthGuard)
