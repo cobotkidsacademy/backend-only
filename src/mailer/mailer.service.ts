@@ -24,11 +24,15 @@ export class MailerService implements OnModuleInit {
 
     if (host && user && pass) {
       const isGmail = host.toLowerCase().includes('gmail');
+      const connectionTimeout = 20_000; // 20s so requests fail fast instead of ~2 min
+      const greetingTimeout = 10_000;
       this.transporter = nodemailer.createTransport(
         isGmail
           ? {
               service: 'gmail',
               auth: { user, pass },
+              connectionTimeout,
+              greetingTimeout,
             }
           : {
               host,
@@ -36,6 +40,8 @@ export class MailerService implements OnModuleInit {
               secure: port === 465,
               requireTLS: port === 587,
               auth: { user, pass },
+              connectionTimeout,
+              greetingTimeout,
             },
       );
       this.logger.log(`Mailer initialized with SMTP (${host}:${port}). Parent verification emails will be sent.`);

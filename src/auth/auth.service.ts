@@ -125,6 +125,106 @@ export class AuthService {
     }
   }
 
+  /** Id of the main platform admin row (role = 'admin'), resolved once per call. */
+  private async getMainAdminId(): Promise<string | null> {
+    const { data } = await this.supabase
+      .from('admins')
+      .select('id')
+      .eq('role', 'admin')
+      .limit(1)
+      .maybeSingle();
+    return data?.id ?? null;
+  }
+
+  /** Get platform branding (company name, logo) from the main admin row (role = 'admin') */
+  async getPlatformBranding(): Promise<{ company_name: string; logo_url: string | null }> {
+    const mainId = await this.getMainAdminId();
+    if (mainId) {
+      const { data } = await this.supabase
+        .from('admins')
+        .select('company_name, logo_url')
+        .eq('id', mainId)
+        .single();
+      if (data) {
+        return {
+          company_name: data.company_name || 'COBOT KIDS KENYA',
+          logo_url: data.logo_url ?? null,
+        };
+      }
+    }
+    const { data } = await this.supabase
+      .from('admins')
+      .select('company_name, logo_url')
+      .limit(1)
+      .maybeSingle();
+    return {
+      company_name: data?.company_name || 'COBOT KIDS KENYA',
+      logo_url: data?.logo_url ?? null,
+    };
+  }
+
+  /**
+   * Get admin settings (company name, logo, login email).
+   * Uses the first admin with role = 'admin' as the main platform admin.
+   */
+  async getAdminSettings(_adminId: string) {
+    const mainId = await this.getMainAdminId();
+    if (!mainId) throw new UnauthorizedException('Admin not found');
+    const { data, error } = await this.supabase
+      .from('admins')
+      .select('company_name, logo_url, email')
+      .eq('id', mainId)
+      .single();
+    if (error || !data) throw new UnauthorizedException('Admin not found');
+    return {
+      company_name: data.company_name ?? 'COBOT KIDS KENYA',
+      logo_url: data.logo_url ?? null,
+      email: data.email ?? '',
+    };
+  }
+
+  /**
+   * Update admin settings (company name, email, logo_url) on the main admin row (role = 'admin').
+   */
+  async updateAdminSettings(
+    _adminId: string,
+    dto: { company_name?: string; email?: string; logo_url?: string },
+  ) {
+    const mainId = await this.getMainAdminId();
+    if (!mainId) throw new UnauthorizedException('Admin not found');
+    const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (dto.company_name !== undefined) update.company_name = dto.company_name;
+    if (dto.email !== undefined) update.email = dto.email.trim().toLowerCase();
+    if (dto.logo_url !== undefined) update.logo_url = dto.logo_url || null;
+    const { data, error } = await this.supabase
+      .from('admins')
+      .update(update)
+      .eq('id', mainId)
+      .select('company_name, logo_url, email')
+      .single();
+    if (error) throw new UnauthorizedException(error.message);
+    return data;
+  }
+
+  /** Change admin password (verify current, set new) */
+  async changeAdminPassword(adminId: string, currentPassword: string, newPassword: string) {
+    const { data: admin, error: fetchError } = await this.supabase
+      .from('admins')
+      .select('id, password_hash')
+      .eq('id', adminId)
+      .single();
+    if (fetchError || !admin) throw new UnauthorizedException('Admin not found');
+    const valid = await bcrypt.compare(currentPassword, admin.password_hash);
+    if (!valid) throw new UnauthorizedException('Current password is incorrect');
+    const password_hash = await bcrypt.hash(newPassword, 10);
+    const { error: updateError } = await this.supabase
+      .from('admins')
+      .update({ password_hash, updated_at: new Date().toISOString() })
+      .eq('id', adminId);
+    if (updateError) throw new UnauthorizedException(updateError.message);
+    return { success: true };
+  }
+
   // ============ STUDENT LOGIN & PROFILE ============
   async studentLogin(username: string, password: string) {
     try {

@@ -116,8 +116,12 @@ If SMTP is not set or wrong, the server will still run but **won’t send email*
    - Failure: `Failed to send verification email to ...: <error message>`.  
    - Common Gmail errors:  
      - **"Invalid login"** or **"Username and Password not accepted"** → Use a Gmail **App Password**, not your normal password, and ensure 2-Step Verification is on.  
-     - **"Connection timeout"** → Firewall or network blocking SMTP; try another network or provider.
-4. **App Password**: In `.env`, `SMTP_PASS` can be pasted with or without spaces (e.g. `abcd efgh ijkl mnop` or `abcdefghijklmnop`); both are accepted.
+     - **"Connection timeout"** or **ETIMEDOUT** → The server cannot reach the SMTP host. Common causes:
+       - **Firewall or network** blocking outbound port 587 or 465 (e.g. office/school Wi‑Fi). Try another network (e.g. mobile hotspot) or ask IT to allow `smtp.gmail.com:587` (or your SMTP host).
+       - **Wrong SMTP_HOST** (e.g. typo). For Gmail use exactly `smtp.gmail.com`.
+       - **Wrong port**: use `587` (TLS) or `465` (SSL) for Gmail. If 587 times out, try `SMTP_PORT=465` and ensure your host allows it.
+       - **Hosting platform** (Railway, Render, etc.) may block SMTP; use their docs or a transactional email API (SendGrid, Mailgun, etc.) instead of direct Gmail SMTP.
+4. **App Password**: In `.env`, `SMTP_PASS` must be the **exact 16-character password** Google gives you. Use the **same letters and capitalization** as shown in Google (e.g. if Google shows `abcd efgh ijkl mnop`, use that). You can paste it **with or without spaces**—the app removes spaces before sending, so both `abcd efgh ijkl mnop` and `abcdefghijklmnop` work.
 
 ## 8. Security notes
 

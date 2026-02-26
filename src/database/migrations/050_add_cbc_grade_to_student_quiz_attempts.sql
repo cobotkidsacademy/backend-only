@@ -6,7 +6,7 @@
 -- =============================================
 
 -- Add column (nullable so existing rows are valid until we backfill)
-ALTER 1
+ALTER TABLE student_quiz_attempts
 ADD COLUMN IF NOT EXISTS score_category TEXT
 CHECK (score_category IS NULL OR score_category IN ('below_expectation', 'approaching', 'meeting', 'exceeding'));
 
@@ -41,7 +41,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trigger_set_student_quiz_attempt_score_category ON student_quiz_attempts;
 CREATE TRIGGER trigger_set_student_quiz_attempt_score_category
-    BEFORE INSERT OR UPDATE OF score, max_score, percentage, status ON student_quiz_attempts
+    BEFORE INSERT OR UPDATE OF score, max_score, percentage ON student_quiz_attempts
     FOR EACH ROW
     EXECUTE FUNCTION set_student_quiz_attempt_score_category();
 
@@ -52,3 +52,19 @@ UPDATE student_quiz_attempts
 SET score_category = student_quiz_attempt_cbc_grade(percentage)
 WHERE percentage IS NOT NULL
   AND (score_category IS NULL OR score_category <> student_quiz_attempt_cbc_grade(percentage));
+
+-- Optional: also run on status change so completed attempts get category
+-- (trigger already covers UPDATE OF percentage; for rows that only get status updated we need UPDATE OF status)
+CREATE OR REPLACE FUNCTION set_student_quiz_attempt_score_category()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.score_category := student_quiz_attempt_cbc_grade(NEW.percentage);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_set_student_quiz_attempt_score_category ON student_quiz_attempts;
+CREATE TRIGGER trigger_set_student_quiz_attempt_score_category
+    BEFORE INSERT OR UPDATE OF score, max_score, percentage, status ON student_quiz_attempts
+    FOR EACH ROW
+    EXECUTE FUNCTION set_student_quiz_attempt_score_category();

@@ -14,7 +14,14 @@ import {
   Param,
   UnauthorizedException,
   Delete,
+  BadRequestException,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ConfigService } from '@nestjs/config';
+import * as path from 'path';
+import * as fs from 'fs';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StudentLoginDto } from './dto/student-login.dto';
@@ -31,6 +38,7 @@ import {
   ResetParentPinDto,
   LinkChildDto,
 } from './dto/parent-verification.dto';
+import { UpdateAdminSettingsDto, ChangeAdminPasswordDto } from './dto/admin-settings.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
@@ -38,7 +46,16 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  /** Public: platform branding for favicon/title (no auth) */
+  @Get('platform-branding')
+  async getPlatformBranding() {
+    return this.authService.getPlatformBranding();
+  }
 
   @Post('admin/login')
   @HttpCode(HttpStatus.OK)
@@ -46,6 +63,54 @@ export class AuthController {
     this.logger.log(`Login request received for: ${loginDto.email}`);
     this.logger.log(`Request body: ${JSON.stringify({ email: loginDto.email, passwordLength: loginDto.password?.length })}`);
     return this.authService.adminLogin(loginDto.email, loginDto.password);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('admin/settings')
+  async getAdminSettings(@Request() req) {
+    if (req.user.role !== 'admin') throw new UnauthorizedException('Only admins can access this endpoint');
+    return this.authService.getAdminSettings(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('admin/settings')
+  async updateAdminSettings(@Request() req, @Body() dto: UpdateAdminSettingsDto) {
+    if (req.user.role !== 'admin') throw new UnauthorizedException('Only admins can access this endpoint');
+    return this.authService.updateAdminSettings(req.user.sub, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/change-password')
+  @HttpCode(HttpStatus.OK)
+  async changeAdminPassword(@Request() req, @Body() dto: ChangeAdminPasswordDto) {
+    if (req.user.role !== 'admin') throw new UnauthorizedException('Only admins can access this endpoint');
+    return this.authService.changeAdminPassword(req.user.sub, dto.current_password, dto.new_password);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/upload-logo')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+      fileFilter: (_, file, cb) => {
+        const allowed = /\.(jpg|jpeg|png|gif|webp|svg)$/i;
+        if (allowed.test(file.originalname)) cb(null, true);
+        else cb(new BadRequestException('Invalid file type. Use jpg, png, gif, webp or svg.'), false);
+      },
+    }),
+  )
+  async uploadAdminLogo(@UploadedFile() file: { buffer: Buffer; originalname: string }, @Request() req) {
+    if (req.user.role !== 'admin') throw new UnauthorizedException('Only admins can access this endpoint');
+    if (!file) throw new BadRequestException('No file provided');
+    const uploadDir = path.join(process.cwd(), 'uploads', 'branding');
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    const ext = path.extname(file.originalname) || '.png';
+    const safeName = `logo-${Date.now()}${ext}`;
+    const filePath = path.join(uploadDir, safeName);
+    fs.writeFileSync(filePath, file.buffer);
+    const baseUrl = this.configService.get<string>('API_BASE_URL') || 'http://localhost:3001';
+    const url = `${baseUrl.replace(/\/$/, '')}/uploads/branding/${safeName}`;
+    return { url, filename: file.originalname };
   }
 
   @UseGuards(JwtAuthGuard)
