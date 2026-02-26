@@ -3,6 +3,8 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseClient } from '@supabase/supabase-js';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AttendanceService } from '../attendance/attendance.service';
 import { CacheService } from '../core/cache/cache.service';
 import { MailerService } from '../mailer/mailer.service';
@@ -136,31 +138,44 @@ export class AuthService {
     return data?.id ?? null;
   }
 
-  /** Get platform branding (company name, logo) from the main admin row (role = 'admin') */
+  /**
+   * Resolve logo from backend uploads/branding folder: first image file (by name).
+   * Returns relative path e.g. /uploads/branding/logo-123.png so frontend can use API_BASE_URL + path.
+   */
+  private getFirstBrandingLogoPath(): string | null {
+    try {
+      const dir = path.join(process.cwd(), 'uploads', 'branding');
+      if (!fs.existsSync(dir)) return null;
+      const ext = /\.(png|jpg|jpeg|gif|webp|svg)$/i;
+      const files = fs.readdirSync(dir).filter((f) => ext.test(f)).sort();
+      const first = files[0];
+      return first ? `/uploads/branding/${first}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get platform branding: company_name from DB, logo from first image in uploads/branding (relative path). */
   async getPlatformBranding(): Promise<{ company_name: string; logo_url: string | null }> {
+    let companyName = 'COBOT KIDS KENYA';
     const mainId = await this.getMainAdminId();
     if (mainId) {
       const { data } = await this.supabase
         .from('admins')
-        .select('company_name, logo_url')
+        .select('company_name')
         .eq('id', mainId)
         .single();
-      if (data) {
-        return {
-          company_name: data.company_name || 'COBOT KIDS KENYA',
-          logo_url: data.logo_url ?? null,
-        };
-      }
+      if (data?.company_name) companyName = data.company_name;
+    } else {
+      const { data } = await this.supabase
+        .from('admins')
+        .select('company_name')
+        .limit(1)
+        .maybeSingle();
+      if (data?.company_name) companyName = data.company_name;
     }
-    const { data } = await this.supabase
-      .from('admins')
-      .select('company_name, logo_url')
-      .limit(1)
-      .maybeSingle();
-    return {
-      company_name: data?.company_name || 'COBOT KIDS KENYA',
-      logo_url: data?.logo_url ?? null,
-    };
+    const logo_url = this.getFirstBrandingLogoPath();
+    return { company_name: companyName, logo_url };
   }
 
   /**
