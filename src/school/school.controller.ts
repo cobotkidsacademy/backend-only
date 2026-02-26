@@ -15,7 +15,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { SchoolService } from './school.service';
-import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto, BulkCreateStudentDto, CreateClassFormDto } from './dto/school.dto';
+import { CreateSchoolDto, UpdateSchoolDto, CreateClassDto, CreateStudentDto, PromoteStudentDto, BulkCreateStudentDto, CreateClassFormDto } from './dto/school.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('schools')
@@ -199,6 +199,12 @@ export class SchoolController {
   @UseGuards(JwtAuthGuard)
   async updateStudent(@Param('id') id: string, @Body() dto: Partial<CreateStudentDto>) {
     return this.schoolService.updateStudent(id, dto);
+  }
+
+  @Post('students/:id/promote')
+  @UseGuards(JwtAuthGuard)
+  async promoteStudent(@Param('id') id: string, @Body() dto: PromoteStudentDto) {
+    return this.schoolService.promoteStudent(id, dto.class_id);
   }
 
   @Delete('students/:id')

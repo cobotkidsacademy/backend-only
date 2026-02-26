@@ -14,8 +14,8 @@ export class TutorService {
   async createTutor(dto: CreateTutorDto) {
     this.logger.log(`Creating tutor: ${dto.first_name} ${dto.last_name}`);
 
-    // Generate email: fname.lname@cobotkids.edutech
-    const baseEmail = `${dto.first_name.toLowerCase()}.${dto.last_name.toLowerCase()}@cobotkids.edutech`;
+    // Generate email: fname.lname@cobotkids.com
+    const baseEmail = `${dto.first_name.toLowerCase()}.${dto.last_name.toLowerCase()}@cobotkids.com`;
     let email = baseEmail.replace(/[^a-z0-9.@]/g, '');
 
     // Check if email exists and make unique if needed
@@ -33,8 +33,8 @@ export class TutorService {
       counter++;
     }
 
-    // Generate password: mname + cocobotkids2026
-    const plainPassword = `${dto.middle_name.toLowerCase()}cobotkids2026`;
+    // Default password for all new tutors
+    const plainPassword = 'cobotkids2026';
     const passwordHash = await bcrypt.hash(plainPassword, 10);
 
     const { data, error } = await this.supabase
@@ -111,7 +111,7 @@ export class TutorService {
       const firstName = dto.first_name || currentTutor.first_name;
       const lastName = dto.last_name || currentTutor.last_name;
 
-      const newEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}@cobotkids.edutech`.replace(
+      const newEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}@cobotkids.com`.replace(
         /[^a-z0-9.@]/g,
         '',
       );
@@ -283,6 +283,46 @@ export class TutorService {
     }
 
     return data;
+  }
+
+  /**
+   * Reset tutor login to new format: email = fname.lname@cobotkids.com, password = cobotkids2026
+   */
+  async resetTutorCredentials(tutorId: string) {
+    const tutor = await this.getTutorById(tutorId);
+    const firstName = (tutor.first_name || '').trim().toLowerCase();
+    const lastName = (tutor.last_name || '').trim().toLowerCase();
+    const baseEmail = `${firstName}.${lastName}@cobotkids.com`.replace(/[^a-z0-9.@]/g, '');
+    let finalEmail = baseEmail;
+    let counter = 1;
+    while (true) {
+      const { data: existing } = await this.supabase
+        .from('tutors')
+        .select('id')
+        .eq('email', finalEmail)
+        .single();
+      if (!existing || existing.id === tutorId) break;
+      finalEmail = baseEmail.replace('@', `${counter}@`);
+      counter++;
+    }
+    const plainPassword = 'cobotkids2026';
+    const passwordHash = await bcrypt.hash(plainPassword, 10);
+    const { data, error } = await this.supabase
+      .from('tutors')
+      .update({
+        email: finalEmail,
+        password_hash: passwordHash,
+        plain_password: plainPassword,
+      })
+      .eq('id', tutorId)
+      .select()
+      .single();
+    if (error) throw new ConflictException('Failed to reset credentials');
+    return {
+      ...data,
+      generated_email: finalEmail,
+      generated_password: plainPassword,
+    };
   }
 
   async getAvailableLevels() {

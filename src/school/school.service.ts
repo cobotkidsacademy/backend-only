@@ -643,6 +643,53 @@ export class SchoolService {
     return data;
   }
 
+  /**
+   * Promote a student to another class (and school if the class is in a different school).
+   * Only updates class_id and school_id on the student; all attendance, projects,
+   * performance, and other data remain linked to the student and are preserved.
+   */
+  async promoteStudent(studentId: string, classId: string) {
+    const { data: student, error: studentError } = await this.supabase
+      .from('students')
+      .select('id')
+      .eq('id', studentId)
+      .single();
+
+    if (studentError || !student) {
+      throw new NotFoundException('Student not found');
+    }
+
+    const { data: classRow, error: classError } = await this.supabase
+      .from('classes')
+      .select('id, school_id')
+      .eq('id', classId)
+      .single();
+
+    if (classError || !classRow) {
+      throw new NotFoundException('Target class not found');
+    }
+
+    const { data: updated, error: updateError } = await this.supabase
+      .from('students')
+      .update({
+        class_id: classId,
+        school_id: classRow.school_id,
+      })
+      .eq('id', studentId)
+      .select(`
+        *,
+        class:classes(id, name, level),
+        school:schools(id, name, code)
+      `)
+      .single();
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    return updated;
+  }
+
   async deleteStudent(id: string) {
     const { error } = await this.supabase
       .from('students')

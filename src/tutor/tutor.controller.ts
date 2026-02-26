@@ -71,6 +71,12 @@ export class TutorController {
   ) {
     return this.tutorService.updateTutor(id, { level: dto.level });
   }
+
+  @Post(':id/reset-credentials')
+  @UseGuards(JwtAuthGuard)
+  async resetTutorCredentials(@Param('id') id: string) {
+    return this.tutorService.resetTutorCredentials(id);
+  }
 }
 
 

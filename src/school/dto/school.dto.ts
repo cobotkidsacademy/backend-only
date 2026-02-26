@@ -100,6 +100,11 @@ export class CreateStudentDto {
   gender?: string;
 }
 
+export class PromoteStudentDto {
+  @IsString()
+  class_id: string;
+}
+
 export class BulkCreateStudentDto {
   @IsString()
   class_id: string;
