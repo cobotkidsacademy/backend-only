@@ -8,15 +8,17 @@ The app sends the **6-digit verification code** to the **email address the user 
 
 ## Option A: Resend (recommended for Railway / Render / hosted backend)
 
-Many cloud platforms **block outbound SMTP** (ports 587/465), which causes “Connection timeout” when using Gmail SMTP. Using **Resend** (HTTP API) avoids that and works from any host.
+Railway and many other cloud platforms **block outbound SMTP** (ports 465 and 587) at the network level to prevent spam. Your app then gets `ETIMEDOUT` when using Gmail or any SMTP—this is not a bug in your code. You cannot unblock these ports. The fix is to use an **email API** over **HTTPS (port 443)**, which is always allowed.
+
+**Resend** is an email API that works over HTTPS. The app uses the official Resend SDK when `RESEND_API_KEY` is set.
 
 1. Sign up at [resend.com](https://resend.com) and create an **API key** ([resend.com/api-keys](https://resend.com/api-keys)).
-2. In your backend env (local `backend/.env` or Railway/Render Variables), set **only**:
+2. In your backend env (local `backend/.env` or Railway → Variables), set **only**:
    ```env
    RESEND_API_KEY=re_xxxxxxxxxxxx
    ```
-3. Restart (or redeploy) the backend. On startup you should see: `Mailer initialized with Resend (HTTP API). Parent verification emails will be sent.`
-4. Emails will be sent from `COBOT Parent Portal <onboarding@resend.dev>` (Resend’s free sender). To use your own domain later, verify it in the Resend dashboard.
+3. Restart (or redeploy) the backend. On startup you should see: `Mailer initialized with Resend (HTTPS). Parent verification emails will be sent.`
+4. Emails are sent from `COBOT Parent Portal <onboarding@resend.dev>`. To use your own domain later, verify it in the Resend dashboard.
 
 If `RESEND_API_KEY` is set, the app uses Resend and **ignores** any SMTP variables.
 

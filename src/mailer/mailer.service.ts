@@ -1,17 +1,16 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Resend } from 'resend';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-
-const RESEND_API = 'https://api.resend.com/emails';
 
 @Injectable()
 export class MailerService implements OnModuleInit {
   private readonly logger = new Logger(MailerService.name);
   private transporter: Transporter | null = null;
   private fromAddress: string;
-  /** When set, use Resend HTTP API instead of SMTP (works on Railway/Render where SMTP is blocked). */
-  private resendApiKey: string | null = null;
+  /** When set, use Resend (HTTPS) instead of SMTP. Required on Railway/Render where outbound SMTP ports are blocked. */
+  private resend: Resend | null = null;
 
   constructor(private configService: ConfigService) {
     this.fromAddress =
@@ -21,9 +20,9 @@ export class MailerService implements OnModuleInit {
 
     const resendKey = (this.configService.get<string>('RESEND_API_KEY') || '').trim();
     if (resendKey) {
-      this.resendApiKey = resendKey;
+      this.resend = new Resend(resendKey);
       this.logger.log(
-        'Mailer initialized with Resend (HTTP API). Parent verification emails will be sent. Use when SMTP is blocked (e.g. Railway).',
+        'Mailer initialized with Resend (HTTPS). Parent verification emails will be sent. Use on Railway/Render where SMTP ports are blocked.',
       );
       return;
     }
@@ -66,7 +65,7 @@ export class MailerService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    if (this.resendApiKey) return;
+    if (this.resend) return;
     if (!this.transporter) return;
     try {
       await this.transporter.verify();
@@ -83,26 +82,15 @@ export class MailerService implements OnModuleInit {
     const fromDisplay = 'COBOT Parent Portal';
     const fromAddr = this.fromAddress;
 
-    if (this.resendApiKey) {
-      const res = await fetch(RESEND_API, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.resendApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: `${fromDisplay} <onboarding@resend.dev>`,
-          to: [toEmail],
-          subject,
-          html,
-          text,
-        }),
+    if (this.resend) {
+      const { error } = await this.resend.emails.send({
+        from: `${fromDisplay} <onboarding@resend.dev>`,
+        to: [toEmail],
+        subject,
+        html,
+        text,
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = (body as any)?.message || body?.message || res.statusText;
-        throw new Error(msg);
-      }
+      if (error) throw new Error(error.message);
       return;
     }
 
