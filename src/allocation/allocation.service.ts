@@ -901,6 +901,134 @@ export class AllocationService {
     };
   }
 
+  /**
+   * Performance data for the tutor across ALL schools (all classes they teach).
+   * Same response shape as getSchoolPerformanceData for dashboard chart and total students.
+   */
+  async getTutorAllSchoolsPerformanceData(tutorId: string) {
+    const { data: assignments, error: assignmentsError } = await this.supabase
+      .from('tutor_class_assignments')
+      .select('class_id, class:classes(id, name, level)')
+      .eq('tutor_id', tutorId)
+      .eq('status', 'active');
+
+    if (assignmentsError) throw new BadRequestException(assignmentsError.message);
+
+    const classIds = (assignments || [])
+      .map((a: any) => (Array.isArray(a.class) ? a.class[0] : a.class)?.id)
+      .filter(Boolean);
+    if (classIds.length === 0) {
+      return {
+        kpis: { total_students: 0, lessons_completed: 0, total_lessons: 0, most_enrolled_class: null, overall_rating: 0 },
+        performance_distribution: { no_attempt: 0, below_expectation: 0, approaching: 0, meeting: 0, exceeding: 0 },
+        weekly_trends: [],
+      };
+    }
+
+    const { data: students } = await this.supabase
+      .from('students')
+      .select('id, class_id')
+      .in('class_id', classIds)
+      .eq('status', 'active');
+    const totalStudents = students?.length || 0;
+    const studentIds = (students || []).map((s: any) => s.id);
+
+    const { data: courseLevelAssignments } = await this.supabase
+      .from('class_course_level_assignments')
+      .select('course_level_id')
+      .in('class_id', classIds)
+      .eq('enrollment_status', 'enrolled');
+    const courseLevelIds = [...new Set((courseLevelAssignments || []).map((a: any) => a.course_level_id))];
+
+    let topics: any[] = [];
+    if (courseLevelIds.length > 0) {
+      const { data: topicsData } = await this.supabase
+        .from('topics')
+        .select('id')
+        .in('level_id', courseLevelIds)
+        .eq('status', 'active');
+      topics = topicsData || [];
+    }
+    const totalLessons = topics.length;
+
+    const { data: quizzes } = await this.supabase
+      .from('quizzes')
+      .select('id, topic_id')
+      .in('topic_id', topics.map((t: any) => t.id))
+      .eq('status', 'active');
+    const quizIds = (quizzes || []).map((q: any) => q.id);
+
+    let completedLessons = 0;
+    if (studentIds.length > 0 && quizIds.length > 0) {
+      const { data: bestScores } = await this.supabase
+        .from('student_quiz_best_scores')
+        .select('quiz_id')
+        .in('student_id', studentIds)
+        .in('quiz_id', quizIds);
+      const completedTopics = new Set();
+      (bestScores || []).forEach((score: any) => {
+        const quiz = (quizzes || []).find((q: any) => q.id === score.quiz_id);
+        if (quiz) completedTopics.add(quiz.topic_id);
+      });
+      completedLessons = completedTopics.size;
+    }
+
+    let overallRating = 0;
+    if (studentIds.length > 0 && quizIds.length > 0) {
+      const { data: allBestScores } = await this.supabase
+        .from('student_quiz_best_scores')
+        .select('best_percentage')
+        .in('student_id', studentIds)
+        .in('quiz_id', quizIds);
+      if (allBestScores && allBestScores.length > 0) {
+        const totalPct = allBestScores.reduce((sum: number, s: any) => sum + (s.best_percentage || 0), 0);
+        overallRating = totalPct / allBestScores.length;
+      }
+    }
+
+    const performanceDistribution = {
+      no_attempt: 0,
+      below_expectation: 0,
+      approaching: 0,
+      meeting: 0,
+      exceeding: 0,
+    };
+    if (studentIds.length > 0 && quizIds.length > 0) {
+      const { data: studentBestScores } = await this.supabase
+        .from('student_quiz_best_scores')
+        .select('student_id, best_percentage')
+        .in('student_id', studentIds)
+        .in('quiz_id', quizIds);
+      const studentHighestScores = new Map();
+      (studentBestScores || []).forEach((score: any) => {
+        const current = studentHighestScores.get(score.student_id) || 0;
+        if (score.best_percentage > current) studentHighestScores.set(score.student_id, score.best_percentage);
+      });
+      studentIds.forEach((id: string) => {
+        const highest = studentHighestScores.get(id) || 0;
+        if (highest === 0) performanceDistribution.no_attempt++;
+        else if (highest <= 25) performanceDistribution.below_expectation++;
+        else if (highest <= 50) performanceDistribution.approaching++;
+        else if (highest <= 75) performanceDistribution.meeting++;
+        else performanceDistribution.exceeding++;
+      });
+    } else {
+      performanceDistribution.no_attempt = totalStudents;
+    }
+
+    return {
+      kpis: {
+        total_students: totalStudents,
+        lessons_completed: completedLessons,
+        total_lessons: totalLessons,
+        most_enrolled_class: null,
+        overall_rating: Math.round(overallRating * 100) / 100,
+      },
+      performance_distribution: performanceDistribution,
+      weekly_trends: [],
+    };
+  }
+
   async getTutorStudents(tutorId: string, filters?: { school_id?: string; class_id?: string; name?: string }) {
     // Get all classes assigned to this tutor
     const { data: assignments, error: assignmentsError } = await this.supabase
@@ -1028,6 +1156,35 @@ export class AllocationService {
     return studentsWithProgress;
   }
 
+  /**
+   * Returns up to 5 students (in tutor's classes) who have at least one quiz attempt
+   * with score_category = 'exceeding' in student_quiz_attempts. Same response shape as getTutorStudents.
+   */
+  async getTutorStudentsExceeding(tutorId: string) {
+    const allStudents = await this.getTutorStudents(tutorId);
+    const studentIds = (allStudents || []).map((s: any) => s.id);
+    if (studentIds.length === 0) return [];
+
+    const { data: exceedingAttempts } = await this.supabase
+      .from('student_quiz_attempts')
+      .select('student_id')
+      .in('student_id', studentIds)
+      .eq('score_category', 'exceeding')
+      .eq('status', 'completed');
+
+    const countByStudent = new Map<string, number>();
+    (exceedingAttempts || []).forEach((row: any) => {
+      countByStudent.set(row.student_id, (countByStudent.get(row.student_id) || 0) + 1);
+    });
+    const sortedStudentIds = Array.from(countByStudent.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id)
+      .slice(0, 5);
+
+    const set = new Set(sortedStudentIds);
+    return (allStudents || []).filter((s: any) => set.has(s.id));
+  }
+
   async getStudentExamData(studentId: string) {
     // Get student's class
     const { data: student, error: studentError } = await this.supabase
@@ -1132,17 +1289,26 @@ export class AllocationService {
       bestScores = scoresData || [];
     }
 
+    const pctToCategory = (pct: number): string => {
+      if (pct == null || Number.isNaN(pct)) return 'below_expectation';
+      if (pct <= 25) return 'below_expectation';
+      if (pct <= 50) return 'approaching';
+      if (pct <= 75) return 'meeting';
+      return 'exceeding';
+    };
+
     // Create a map of quiz_id -> best score (calculate passed based on passing_score)
     const scoreMap = new Map();
     bestScores.forEach((score: any) => {
       const quiz = quizMap.get(score.quiz_id);
       const passingScore = quiz?.passing_score || 0;
-      const passed = (score.best_percentage || 0) >= passingScore;
-      
+      const pct = score.best_percentage || 0;
+      const passed = pct >= passingScore;
       scoreMap.set(score.quiz_id, {
-        percentage: score.best_percentage || 0,
+        percentage: pct,
         score: score.best_score || 0,
-        passed: passed,
+        passed,
+        score_category: pctToCategory(pct),
       });
     });
 
@@ -1192,6 +1358,7 @@ export class AllocationService {
             score: score.score,
             max_score: quiz.total_points,
             passed: score.passed,
+            score_category: score.score_category || pctToCategory(Number(score.percentage)),
           });
         }
       });

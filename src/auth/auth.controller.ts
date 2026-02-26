@@ -221,6 +221,25 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Put('tutor/me/profile')
+  async updateTutorProfile(
+    @Request() req,
+    @Body()
+    dto: {
+      first_name?: string;
+      last_name?: string;
+      phone?: string;
+      profile_image_url?: string | null;
+      display_class_name?: string | null;
+    },
+  ) {
+    if (req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only tutors can update this');
+    }
+    return this.authService.updateTutorProfile(req.user.sub, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('parent/me')
   async getParentInfo(@Request() req) {
     return this.authService.getParentInfo(req.user.sub);

@@ -6,7 +6,7 @@
 -- =============================================
 
 -- Add column (nullable so existing rows are valid until we backfill)
-ALTER TABLE student_quiz_attempts
+ALTER 1
 ADD COLUMN IF NOT EXISTS score_category TEXT
 CHECK (score_category IS NULL OR score_category IN ('below_expectation', 'approaching', 'meeting', 'exceeding'));
 

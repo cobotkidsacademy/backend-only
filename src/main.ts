@@ -88,6 +88,16 @@ async function bootstrap() {
     next();
   });
 
+  // DEBUG: log every request when DEBUG=1 or DEBUG=true (helps verify routes are hit)
+  const isDebug = /^1|true|yes$/i.test(process.env.DEBUG || '');
+  if (isDebug) {
+    app.use((req: any, _res: any, next: any) => {
+      console.log(`[DEBUG] ${req.method} ${req.url}`);
+      next();
+    });
+    console.log('✅ DEBUG request logging enabled (set DEBUG=1 in .env)');
+  }
+
   // Global interceptors for performance optimization
   app.useGlobalInterceptors(
     new ResponseCompressInterceptor(), // Removes null/undefined fields, reduces payload size by 10-30%

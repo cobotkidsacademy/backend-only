@@ -806,6 +806,36 @@ export class AuthService {
     return data;
   }
 
+  /** Tutor self-service: update own profile (name, phone, profile image, display class name). */
+  async updateTutorProfile(
+    tutorId: string,
+    dto: {
+      first_name?: string;
+      last_name?: string;
+      phone?: string;
+      profile_image_url?: string | null;
+      display_class_name?: string | null;
+    },
+  ) {
+    const payload: Record<string, unknown> = {};
+    if (dto.first_name !== undefined) payload.first_name = dto.first_name?.trim() || null;
+    if (dto.last_name !== undefined) payload.last_name = dto.last_name?.trim() || null;
+    if (dto.phone !== undefined) payload.phone = dto.phone?.trim() || null;
+    if (dto.profile_image_url !== undefined) payload.profile_image_url = dto.profile_image_url?.trim() || null;
+    if (dto.display_class_name !== undefined) payload.display_class_name = dto.display_class_name?.trim() || null;
+    if (Object.keys(payload).length === 0) {
+      return this.getTutorInfo(tutorId);
+    }
+    const { data, error } = await this.supabase
+      .from('tutors')
+      .update(payload)
+      .eq('id', tutorId)
+      .select()
+      .single();
+    if (error) throw new UnauthorizedException('Failed to update profile');
+    return data;
+  }
+
   // ============ PARENT LOGIN & PROFILE ============
 
   async parentLogin(email: string, password: string) {

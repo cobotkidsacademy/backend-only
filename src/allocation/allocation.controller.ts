@@ -160,6 +160,15 @@ export class AllocationController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('tutor/me/students/exceeding')
+  async getMyStudentsExceeding(@Request() req) {
+    if (req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only tutors can access this endpoint');
+    }
+    return this.allocationService.getTutorStudentsExceeding(req.user.sub);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('tutor/me/students/:studentId/exam')
   async getStudentExamData(@Request() req, @Param('studentId') studentId: string) {
     if (req.user.role !== 'tutor') {
@@ -172,6 +181,15 @@ export class AllocationController {
       throw new UnauthorizedException('You do not have access to this student');
     }
     return this.allocationService.getStudentExamData(studentId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('tutor/me/performance/all-schools')
+  async getTutorAllSchoolsPerformance(@Request() req) {
+    if (req.user.role !== 'tutor') {
+      throw new UnauthorizedException('Only tutors can access this endpoint');
+    }
+    return this.allocationService.getTutorAllSchoolsPerformanceData(req.user.sub);
   }
 
   @UseGuards(JwtAuthGuard)
