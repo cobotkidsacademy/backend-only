@@ -1,10 +1,28 @@
 # Parent Portal – Email configuration (verification codes)
 
-The app sends the **6-digit verification code** to the **email address the user enters**. To actually deliver these emails, you must configure SMTP.
+The app sends the **6-digit verification code** to the **email address the user enters**. To actually deliver these emails, you must configure either **Resend** (recommended when hosting) or **SMTP**.
 
-**Important:** When you run the app **locally**, you use `backend/.env`. When you **host** the app (Railway, Render, Fly.io, etc.), the server does **not** use your local `.env` file—you must set the same variables in your hosting platform’s **Environment Variables** (e.g. Railway → your backend service → Variables). If they are not set on the host, verification emails will not be sent (the app will only log the code in server logs).
+**Important:** When you run the app **locally**, you use `backend/.env`. When you **host** the app (Railway, Render, Fly.io, etc.), the server does **not** use your local `.env` file—you must set the same variables in your hosting platform’s **Environment Variables** (e.g. Railway → your backend service → Variables). If they are not set on the host, verification emails will not be sent.
 
 ---
+
+## Option A: Resend (recommended for Railway / Render / hosted backend)
+
+Many cloud platforms **block outbound SMTP** (ports 587/465), which causes “Connection timeout” when using Gmail SMTP. Using **Resend** (HTTP API) avoids that and works from any host.
+
+1. Sign up at [resend.com](https://resend.com) and create an **API key** ([resend.com/api-keys](https://resend.com/api-keys)).
+2. In your backend env (local `backend/.env` or Railway/Render Variables), set **only**:
+   ```env
+   RESEND_API_KEY=re_xxxxxxxxxxxx
+   ```
+3. Restart (or redeploy) the backend. On startup you should see: `Mailer initialized with Resend (HTTP API). Parent verification emails will be sent.`
+4. Emails will be sent from `COBOT Parent Portal <onboarding@resend.dev>` (Resend’s free sender). To use your own domain later, verify it in the Resend dashboard.
+
+If `RESEND_API_KEY` is set, the app uses Resend and **ignores** any SMTP variables.
+
+---
+
+## Option B: SMTP (Gmail, Outlook, etc.)
 
 ## 1. Add these variables (locally: `backend/.env`; when hosting: platform Variables)
 
@@ -40,7 +58,7 @@ After changing `.env` (local) or platform Variables (hosted), restart or redeplo
 5. After deploy, check the backend logs on startup:
    - **Working:** `Mailer initialized with SMTP (smtp.gmail.com:587)...` then `SMTP connection verified. Ready to send parent verification emails.`
    - **Not set:** `SMTP not configured (host=..., user=..., pass=...)`. Add the variables in the host’s Environment Variables.
-   - **Wrong credentials / port blocked:** `SMTP verification failed. Parent verification emails may not send. Error: ...` — fix the error (e.g. use Gmail App Password, check firewall).
+   - **Wrong credentials / port blocked:** `SMTP verification failed. Parent verification emails may not send. Error: ...` — fix the error (e.g. use Gmail App Password, check firewall). **If you see “Connection timeout” on Railway/Render,** use **Resend** (Option A above) instead of SMTP.
 
 ---
 

@@ -3,17 +3,30 @@ import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 
+const RESEND_API = 'https://api.resend.com/emails';
+
 @Injectable()
 export class MailerService implements OnModuleInit {
   private readonly logger = new Logger(MailerService.name);
   private transporter: Transporter | null = null;
   private fromAddress: string;
+  /** When set, use Resend HTTP API instead of SMTP (works on Railway/Render where SMTP is blocked). */
+  private resendApiKey: string | null = null;
 
   constructor(private configService: ConfigService) {
     this.fromAddress =
       this.configService.get<string>('MAIL_FROM') ||
       this.configService.get<string>('SMTP_USER') ||
       'noreply@cobotkids.edutech';
+
+    const resendKey = (this.configService.get<string>('RESEND_API_KEY') || '').trim();
+    if (resendKey) {
+      this.resendApiKey = resendKey;
+      this.logger.log(
+        'Mailer initialized with Resend (HTTP API). Parent verification emails will be sent. Use when SMTP is blocked (e.g. Railway).',
+      );
+      return;
+    }
 
     // Support both string and number from env (hosting platforms often give strings)
     const portRaw = this.configService.get<string>('SMTP_PORT') ?? this.configService.get<number>('SMTP_PORT');
@@ -47,13 +60,13 @@ export class MailerService implements OnModuleInit {
       this.logger.log(`Mailer initialized with SMTP (${host}:${port}). Parent verification emails will be sent.`);
     } else {
       this.logger.warn(
-        `SMTP not configured (host=${!!host}, user=${!!user}, pass=${!!pass}). Parent verification emails will NOT be sent. ` +
-          'Set SMTP_HOST, SMTP_USER, SMTP_PASS in your environment. When hosting, add these in the platform Variables—see backend/EMAIL_SETUP.md.',
+        `Email not configured. Set RESEND_API_KEY (recommended on Railway) or SMTP_HOST, SMTP_USER, SMTP_PASS. See backend/EMAIL_SETUP.md.`,
       );
     }
   }
 
   async onModuleInit() {
+    if (this.resendApiKey) return;
     if (!this.transporter) return;
     try {
       await this.transporter.verify();
@@ -61,10 +74,48 @@ export class MailerService implements OnModuleInit {
     } catch (err: any) {
       this.logger.error(
         `SMTP verification failed. Parent verification emails may not send. Error: ${err?.message || err}. ` +
-          'Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (use App Password for Gmail). See backend/EMAIL_SETUP.md.',
+          'Use RESEND_API_KEY instead (see backend/EMAIL_SETUP.md) when hosting on Railway/Render where SMTP is often blocked.',
       );
-      // Do not clear transporter so we still attempt send and log the error at send time
     }
+  }
+
+  private async sendMail(toEmail: string, subject: string, html: string, text: string): Promise<void> {
+    const fromDisplay = 'COBOT Parent Portal';
+    const fromAddr = this.fromAddress;
+
+    if (this.resendApiKey) {
+      const res = await fetch(RESEND_API, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: `${fromDisplay} <onboarding@resend.dev>`,
+          to: [toEmail],
+          subject,
+          html,
+          text,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = (body as any)?.message || body?.message || res.statusText;
+        throw new Error(msg);
+      }
+      return;
+    }
+
+    if (!this.transporter) {
+      throw new Error('Email is not configured. Set RESEND_API_KEY or SMTP_* (see backend/EMAIL_SETUP.md).');
+    }
+    await this.transporter.sendMail({
+      from: `"${fromDisplay}" <${fromAddr}>`,
+      to: toEmail,
+      subject,
+      text,
+      html,
+    });
   }
 
   async sendVerificationCode(toEmail: string, code: string): Promise<void> {
@@ -109,18 +160,8 @@ export class MailerService implements OnModuleInit {
 
     const text = `Your COBOT Parent Portal verification code is: ${code}. It expires in 10 minutes.`;
 
-    if (!this.transporter) {
-      this.logger.error(`Cannot send verification email: SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS (see backend/EMAIL_SETUP.md).`);
-      throw new Error('Email is not configured. Please contact support.');
-    }
     try {
-      await this.transporter.sendMail({
-        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-        to: toEmail,
-        subject,
-        text,
-        html,
-      });
+      await this.sendMail(toEmail, subject, html, text);
       this.logger.log(`Verification email sent to ${toEmail}`);
     } catch (err: any) {
       const msg = err?.message || String(err);
@@ -158,18 +199,8 @@ export class MailerService implements OnModuleInit {
 </body>
 </html>`;
     const text = `Your COBOT Parent Portal PIN reset code is: ${code}. It expires in 10 minutes.`;
-    if (!this.transporter) {
-      this.logger.error(`Cannot send PIN reset email: SMTP not configured.`);
-      throw new Error('Email is not configured. Please contact support.');
-    }
     try {
-      await this.transporter.sendMail({
-        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-        to: toEmail,
-        subject,
-        text,
-        html,
-      });
+      await this.sendMail(toEmail, subject, html, text);
       this.logger.log(`PIN reset email sent to ${toEmail}`);
     } catch (err: any) {
       this.logger.error(`Failed to send PIN reset email to ${toEmail}: ${err?.message || err}`);
@@ -221,18 +252,8 @@ export class MailerService implements OnModuleInit {
 
     const text = `Your COBOT Parent Portal account is ready. Sign in with email: ${toEmail} and the 4-digit PIN you set during registration.`;
 
-    if (!this.transporter) {
-      this.logger.error(`Cannot send welcome email: SMTP not configured.`);
-      throw new Error('Email is not configured. Please contact support.');
-    }
     try {
-      await this.transporter.sendMail({
-        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-        to: toEmail,
-        subject,
-        text,
-        html,
-      });
+      await this.sendMail(toEmail, subject, html, text);
       this.logger.log(`Welcome email sent to ${toEmail}`);
     } catch (err: any) {
       this.logger.error(`Failed to send welcome email to ${toEmail}: ${err?.message || err}`);
