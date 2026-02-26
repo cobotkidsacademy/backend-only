@@ -36,10 +36,11 @@ export class MailerService {
               auth: { user, pass },
             },
       );
-      this.logger.log(`Mailer initialized with SMTP (${host})`);
+      this.logger.log(`Mailer initialized with SMTP (${host}). Parent verification emails will be sent.`);
     } else {
       this.logger.warn(
-        `SMTP not configured. Have: host=${!!host}, user=${!!user}, pass=${!!pass}. Verification emails will be logged only.`,
+        `SMTP not configured (host=${!!host}, user=${!!user}, pass=${!!pass}). Parent verification emails will NOT be sent—codes are logged only. ` +
+          'Set SMTP_HOST, SMTP_USER, SMTP_PASS in your environment. When hosting (Railway, Render, etc.), add these in the platform Variables/Env—see backend/EMAIL_SETUP.md.',
       );
     }
   }

@@ -1,10 +1,12 @@
 # Parent Portal – Email configuration (verification codes)
 
-The app sends the **6-digit verification code** to the **email address the user enters**. To actually deliver these emails, configure SMTP in your `.env` file.
+The app sends the **6-digit verification code** to the **email address the user enters**. To actually deliver these emails, you must configure SMTP.
+
+**Important:** When you run the app **locally**, you use `backend/.env`. When you **host** the app (Railway, Render, Fly.io, etc.), the server does **not** use your local `.env` file—you must set the same variables in your hosting platform’s **Environment Variables** (e.g. Railway → your backend service → Variables). If they are not set on the host, verification emails will not be sent (the app will only log the code in server logs).
 
 ---
 
-## 1. Add these variables to `backend/.env`
+## 1. Add these variables (locally: `backend/.env`; when hosting: platform Variables)
 
 ```env
 SMTP_HOST=your-smtp-host
@@ -20,11 +22,28 @@ MAIL_FROM=your-email@domain.com
 - **SMTP_PASS** – Password or **App Password** (not your normal email password for Gmail/Outlook).  
 - **MAIL_FROM** – “From” address recipients see (often same as `SMTP_USER`).
 
-After changing `.env`, restart the backend server.
+After changing `.env` (local) or platform Variables (hosted), restart or redeploy the backend.
 
 ---
 
-## 2. Gmail
+## 2. When hosting (Railway, Render, Fly.io, Vercel, etc.)
+
+1. In your hosting dashboard, open your **backend** service/project.
+2. Go to **Environment Variables** (or **Variables**, **Env**, **Config**).
+3. Add the same SMTP variables as above:
+   - `SMTP_HOST` (e.g. `smtp.gmail.com`)
+   - `SMTP_PORT` (e.g. `587`)
+   - `SMTP_USER` (your full email)
+   - `SMTP_PASS` (App Password or SMTP password—no spaces in the value if the platform strips them)
+   - `MAIL_FROM` (optional; defaults to SMTP_USER)
+4. Save and **redeploy** (or restart) the backend so it picks up the new variables.
+5. After deploy, check the backend logs on startup:
+   - **Working:** `Mailer initialized with SMTP (smtp.gmail.com). Parent verification emails will be sent.`
+   - **Not set:** `SMTP not configured ... Parent verification emails will NOT be sent`. If you see this, the variables are missing or wrong on the host.
+
+---
+
+## 3. Gmail
 
 1. Use a Gmail account (e.g. `cobot.parents@gmail.com`).
 2. Turn on 2-Step Verification: [Google Account → Security → 2-Step Verification](https://myaccount.google.com/security).
@@ -46,7 +65,7 @@ Use the 16-character App Password for `SMTP_PASS` (you can paste it with or with
 
 ---
 
-## 3. Outlook / Microsoft 365
+## 4. Outlook / Microsoft 365
 
 1. Use an Outlook or Microsoft 365 account.
 2. Create an app password if you use 2FA: [Microsoft account → Security → Advanced security → App passwords](https://account.microsoft.com/security).
@@ -62,7 +81,7 @@ MAIL_FROM=your-email@outlook.com
 
 ---
 
-## 4. Other providers (generic SMTP)
+## 5. Other providers (generic SMTP)
 
 | Provider   | SMTP_HOST           | SMTP_PORT |
 |-----------|---------------------|-----------|
@@ -75,7 +94,7 @@ Use the email and password (or API/app password) they give you for SMTP for `SMT
 
 ---
 
-## 5. Check that it works
+## 6. Check that it works
 
 1. Restart the backend.
 2. On parent login/register, enter **your own email** and request a code.
@@ -85,7 +104,7 @@ If SMTP is not set or wrong, the server will still run but **won’t send email*
 
 ---
 
-## 6. If email is still not sending
+## 7. If email is still not sending
 
 1. **Restart the backend** after changing `.env` (Config is read on startup).
 2. **Check backend console on startup**  
@@ -99,7 +118,7 @@ If SMTP is not set or wrong, the server will still run but **won’t send email*
      - **"Connection timeout"** → Firewall or network blocking SMTP; try another network or provider.
 4. **App Password**: In `.env`, `SMTP_PASS` can be pasted with or without spaces (e.g. `abcd efgh ijkl mnop` or `abcdefghijklmnop`); both are accepted.
 
-## 7. Security notes
+## 8. Security notes
 
 - **Do not commit `.env`** (it should be in `.gitignore`).
 - Use an **App Password** or SMTP API key, not your main email password.
