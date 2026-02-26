@@ -38,8 +38,9 @@ After changing `.env` (local) or platform Variables (hosted), restart or redeplo
    - `MAIL_FROM` (optional; defaults to SMTP_USER)
 4. Save and **redeploy** (or restart) the backend so it picks up the new variables.
 5. After deploy, check the backend logs on startup:
-   - **Working:** `Mailer initialized with SMTP (smtp.gmail.com). Parent verification emails will be sent.`
-   - **Not set:** `SMTP not configured ... Parent verification emails will NOT be sent`. If you see this, the variables are missing or wrong on the host.
+   - **Working:** `Mailer initialized with SMTP (smtp.gmail.com:587)...` then `SMTP connection verified. Ready to send parent verification emails.`
+   - **Not set:** `SMTP not configured (host=..., user=..., pass=...)`. Add the variables in the host’s Environment Variables.
+   - **Wrong credentials / port blocked:** `SMTP verification failed. Parent verification emails may not send. Error: ...` — fix the error (e.g. use Gmail App Password, check firewall).
 
 ---
 

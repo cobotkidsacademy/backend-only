@@ -1,10 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 
 @Injectable()
-export class MailerService {
+export class MailerService implements OnModuleInit {
   private readonly logger = new Logger(MailerService.name);
   private transporter: Transporter | null = null;
   private fromAddress: string;
@@ -15,8 +15,10 @@ export class MailerService {
       this.configService.get<string>('SMTP_USER') ||
       'noreply@cobotkids.edutech';
 
+    // Support both string and number from env (hosting platforms often give strings)
+    const portRaw = this.configService.get<string>('SMTP_PORT') ?? this.configService.get<number>('SMTP_PORT');
+    const port = portRaw != null ? Number(portRaw) : 587;
     const host = (this.configService.get<string>('SMTP_HOST') || '').trim();
-    const port = this.configService.get<number>('SMTP_PORT') ?? 587;
     const user = (this.configService.get<string>('SMTP_USER') || '').trim();
     const pass = (this.configService.get<string>('SMTP_PASS') || '').trim().replace(/\s/g, ''); // remove spaces (e.g. App Password)
 
@@ -30,18 +32,32 @@ export class MailerService {
             }
           : {
               host,
-              port: Number(port),
+              port,
               secure: port === 465,
               requireTLS: port === 587,
               auth: { user, pass },
             },
       );
-      this.logger.log(`Mailer initialized with SMTP (${host}). Parent verification emails will be sent.`);
+      this.logger.log(`Mailer initialized with SMTP (${host}:${port}). Parent verification emails will be sent.`);
     } else {
       this.logger.warn(
-        `SMTP not configured (host=${!!host}, user=${!!user}, pass=${!!pass}). Parent verification emails will NOT be sent—codes are logged only. ` +
-          'Set SMTP_HOST, SMTP_USER, SMTP_PASS in your environment. When hosting (Railway, Render, etc.), add these in the platform Variables/Env—see backend/EMAIL_SETUP.md.',
+        `SMTP not configured (host=${!!host}, user=${!!user}, pass=${!!pass}). Parent verification emails will NOT be sent. ` +
+          'Set SMTP_HOST, SMTP_USER, SMTP_PASS in your environment. When hosting, add these in the platform Variables—see backend/EMAIL_SETUP.md.',
       );
+    }
+  }
+
+  async onModuleInit() {
+    if (!this.transporter) return;
+    try {
+      await this.transporter.verify();
+      this.logger.log('SMTP connection verified. Ready to send parent verification emails.');
+    } catch (err: any) {
+      this.logger.error(
+        `SMTP verification failed. Parent verification emails may not send. Error: ${err?.message || err}. ` +
+          'Check SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (use App Password for Gmail). See backend/EMAIL_SETUP.md.',
+      );
+      // Do not clear transporter so we still attempt send and log the error at send time
     }
   }
 
@@ -87,22 +103,24 @@ export class MailerService {
 
     const text = `Your COBOT Parent Portal verification code is: ${code}. It expires in 10 minutes.`;
 
-    if (this.transporter) {
-      try {
-        await this.transporter.sendMail({
-          from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-          to: toEmail,
-          subject,
-          text,
-          html,
-        });
-        this.logger.log(`Verification email sent to ${toEmail}`);
-      } catch (err: any) {
-        this.logger.error(`Failed to send verification email to ${toEmail}: ${err?.message || err}`);
-        throw err;
-      }
-    } else {
-      this.logger.log(`[No SMTP] Would send verification to ${toEmail}: code=${code}`);
+    if (!this.transporter) {
+      this.logger.error(`Cannot send verification email: SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS (see backend/EMAIL_SETUP.md).`);
+      throw new Error('Email is not configured. Please contact support.');
+    }
+    try {
+      await this.transporter.sendMail({
+        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
+        to: toEmail,
+        subject,
+        text,
+        html,
+      });
+      this.logger.log(`Verification email sent to ${toEmail}`);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const code = err?.code ?? err?.responseCode;
+      this.logger.error(`Failed to send verification email to ${toEmail}: ${msg}${code ? ` (code=${code})` : ''}`);
+      throw err;
     }
   }
 
@@ -134,22 +152,22 @@ export class MailerService {
 </body>
 </html>`;
     const text = `Your COBOT Parent Portal PIN reset code is: ${code}. It expires in 10 minutes.`;
-    if (this.transporter) {
-      try {
-        await this.transporter.sendMail({
-          from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-          to: toEmail,
-          subject,
-          text,
-          html,
-        });
-        this.logger.log(`PIN reset email sent to ${toEmail}`);
-      } catch (err: any) {
-        this.logger.error(`Failed to send PIN reset email to ${toEmail}: ${err?.message || err}`);
-        throw err;
-      }
-    } else {
-      this.logger.log(`[No SMTP] Would send PIN reset to ${toEmail}: code=${code}`);
+    if (!this.transporter) {
+      this.logger.error(`Cannot send PIN reset email: SMTP not configured.`);
+      throw new Error('Email is not configured. Please contact support.');
+    }
+    try {
+      await this.transporter.sendMail({
+        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
+        to: toEmail,
+        subject,
+        text,
+        html,
+      });
+      this.logger.log(`PIN reset email sent to ${toEmail}`);
+    } catch (err: any) {
+      this.logger.error(`Failed to send PIN reset email to ${toEmail}: ${err?.message || err}`);
+      throw err;
     }
   }
 
@@ -197,22 +215,22 @@ export class MailerService {
 
     const text = `Your COBOT Parent Portal account is ready. Sign in with email: ${toEmail} and the 4-digit PIN you set during registration.`;
 
-    if (this.transporter) {
-      try {
-        await this.transporter.sendMail({
-          from: `"COBOT Parent Portal" <${this.fromAddress}>`,
-          to: toEmail,
-          subject,
-          text,
-          html,
-        });
-        this.logger.log(`Welcome email sent to ${toEmail}`);
-      } catch (err: any) {
-        this.logger.error(`Failed to send welcome email to ${toEmail}: ${err?.message || err}`);
-        throw err;
-      }
-    } else {
-      this.logger.log(`[No SMTP] Would send welcome to ${toEmail}`);
+    if (!this.transporter) {
+      this.logger.error(`Cannot send welcome email: SMTP not configured.`);
+      throw new Error('Email is not configured. Please contact support.');
+    }
+    try {
+      await this.transporter.sendMail({
+        from: `"COBOT Parent Portal" <${this.fromAddress}>`,
+        to: toEmail,
+        subject,
+        text,
+        html,
+      });
+      this.logger.log(`Welcome email sent to ${toEmail}`);
+    } catch (err: any) {
+      this.logger.error(`Failed to send welcome email to ${toEmail}: ${err?.message || err}`);
+      throw err;
     }
   }
 }
