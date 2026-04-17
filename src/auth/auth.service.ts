@@ -365,6 +365,112 @@ export class AuthService {
     }
   }
 
+  async studentClassCodeLogin(username: string, code: string) {
+    try {
+      const normalizedUsername = (username || '').trim();
+      const normalizedCode = (code || '').replace(/\D/g, '').slice(0, 3);
+
+      if (!normalizedUsername) {
+        throw new UnauthorizedException('Username is required');
+      }
+      if (!/^\d{3}$/.test(normalizedCode)) {
+        throw new UnauthorizedException('Class code must be 3 digits');
+      }
+
+      const { data: student, error: studentError } = await this.supabase
+        .from('students')
+        .select('id, username, first_name, last_name, status, class_id, school_id, login_count')
+        .eq('username', normalizedUsername)
+        .single();
+
+      if (studentError || !student) {
+        throw new UnauthorizedException('Invalid username');
+      }
+
+      if (student.status !== 'active') {
+        throw new UnauthorizedException('Your account is not active. Please contact your administrator.');
+      }
+
+      const classCodeValidation = await this.studentCoursesService.validateClassCodeAny(
+        student.id,
+        normalizedCode,
+        { includeTopicNotes: false },
+      );
+
+      if (!classCodeValidation?.valid) {
+        throw new UnauthorizedException(classCodeValidation?.message || 'Invalid or expired class code');
+      }
+
+      const loginTimestamp = new Date().toISOString();
+      const currentLoginCount = (student as any).login_count || 0;
+
+      await this.supabase
+        .from('students')
+        .update({
+          last_login: loginTimestamp,
+          login_count: currentLoginCount + 1,
+        })
+        .eq('id', student.id);
+
+      this.attendanceService
+        .autoMarkAttendance({
+          student_id: student.id,
+          login_timestamp: loginTimestamp,
+        })
+        .catch((err) => {
+          this.logger.warn(
+            `Failed to auto-mark attendance for student ${student.id}: ${err.message}`,
+            err.stack,
+          );
+        });
+
+      const payload = {
+        sub: student.id,
+        username: student.username,
+        role: 'student',
+      };
+
+      const token = this.jwtService.sign(payload);
+
+      const userMeta = {
+        id: student.id,
+        username: student.username,
+        first_name: student.first_name,
+        last_name: student.last_name,
+        role: 'student',
+        class_id: student.class_id,
+        school_id: student.school_id,
+      };
+
+      await this.cacheService.set(`user:student:${student.id}:meta`, userMeta, 900, 'auth');
+      await this.cacheService.set(
+        `user:student:${student.username}:meta`,
+        { id: student.id, username: student.username },
+        900,
+        'auth',
+      );
+
+      return {
+        token,
+        user: userMeta,
+        access_context: {
+          code: normalizedCode,
+          course_id: classCodeValidation.course_id ?? null,
+          course_level_id: classCodeValidation.course_level_id ?? null,
+          topic_id: classCodeValidation.topic_id ?? null,
+          topic: classCodeValidation.topic ?? null,
+          topic_notes: classCodeValidation.topic_notes ?? null,
+        },
+      };
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      this.logger.error(`Student class-code login error: ${error.message}`, error.stack);
+      throw new UnauthorizedException('Unable to login with class code. Please try again.');
+    }
+  }
+
   /**
    * Check if student usernames are valid for team-up (exist, active, same class as host).
    * Used when students share one device and the logged-in student adds teammates by username.

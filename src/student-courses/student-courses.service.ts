@@ -37,7 +37,12 @@ export class StudentCoursesService {
    * Validate class code without requiring the client to provide a course level.
    * Returns the matched course_id/course_level_id/topic_id so the UI can navigate immediately.
    */
-  async validateClassCodeAny(studentId: string, code: string): Promise<any> {
+  async validateClassCodeAny(
+    studentId: string,
+    code: string,
+    options?: { includeTopicNotes?: boolean },
+  ): Promise<any> {
+    const includeTopicNotes = options?.includeTopicNotes ?? true;
     if (!code || typeof code !== 'string' || !/^\d{3}$/.test(code)) {
       return { valid: false, message: 'Invalid code format' };
     }
@@ -118,25 +123,27 @@ export class StudentCoursesService {
 
           if (assignment) {
             let topicNotes = null;
-            try {
-              const { data: notes } = await this.supabase
-                .from('notes')
-                .select('id')
-                .eq('topic_id', selfResult.topic_id)
-                .eq('status', 'active');
-              if (notes?.length) {
-                const { data: noteElements } = await this.supabase
-                  .from('note_elements')
-                  .select(`
-                    id, element_type, content, position_x, position_y,
-                    width, height, z_index, font_size, font_weight, font_family,
-                    font_color, text_align, background_color, note_id, order_index
-                  `)
-                  .in('note_id', notes.map((n: any) => n.id))
-                  .order('z_index', { ascending: true });
-                topicNotes = noteElements || [];
-              }
-            } catch {}
+            if (includeTopicNotes) {
+              try {
+                const { data: notes } = await this.supabase
+                  .from('notes')
+                  .select('id')
+                  .eq('topic_id', selfResult.topic_id)
+                  .eq('status', 'active');
+                if (notes?.length) {
+                  const { data: noteElements } = await this.supabase
+                    .from('note_elements')
+                    .select(`
+                      id, element_type, content, position_x, position_y,
+                      width, height, z_index, font_size, font_weight, font_family,
+                      font_color, text_align, background_color, note_id, order_index
+                    `)
+                    .in('note_id', notes.map((n: any) => n.id))
+                    .order('z_index', { ascending: true });
+                  topicNotes = noteElements || [];
+                }
+              } catch {}
+            }
             const topicNorm = this.normalizeTopicForResponse(topic);
             return {
               valid: true,
@@ -185,7 +192,7 @@ export class StudentCoursesService {
 
     // Pre-fetch topic notes (note_elements) for faster loading (same logic as validateClassCode)
     let topicNotes = null;
-    if (classCode.topic_id && classCode.topic) {
+    if (includeTopicNotes && classCode.topic_id && classCode.topic) {
       try {
         const { data: notes } = await this.supabase
           .from('notes')

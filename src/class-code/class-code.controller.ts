@@ -30,6 +30,11 @@ export class ClassCodeController {
     return this.classCodeService.validateCode(dto);
   }
 
+  @Post('validate-any')
+  async validateCodeAny(@Body() body: { code: string }) {
+    return this.classCodeService.validateCodeAny(body?.code || '');
+  }
+
   // Specific routes must come before parameterized routes
   @UseGuards(JwtAuthGuard)
   @Get('tutor/me/classes')

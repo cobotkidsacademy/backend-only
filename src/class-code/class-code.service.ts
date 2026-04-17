@@ -526,6 +526,69 @@ export class ClassCodeService {
     };
   }
 
+  async validateCodeAny(
+    code: string,
+  ): Promise<{ valid: boolean; message: string; class_code?: ClassCode; server_time?: string; topic_id?: string }> {
+    const networkTime = await this.getNetworkTime();
+    const normalizedCode = (code || '').replace(/\D/g, '').slice(0, 3);
+
+    if (!/^\d{3}$/.test(normalizedCode)) {
+      return { valid: false, message: 'Code must be 3 digits', server_time: networkTime.toISOString() };
+    }
+
+    const { data: classCode, error } = await this.supabase
+      .from('class_codes')
+      .select(
+        `
+        *,
+        generated_by:tutors(id, first_name, middle_name, last_name),
+        topic:topics(
+          id,
+          name,
+          level_id,
+          course_level:course_levels(
+            id,
+            course_id,
+            course:courses(id, name, code)
+          )
+        )
+      `,
+      )
+      .eq('code', normalizedCode)
+      .eq('status', 'active')
+      .gt('valid_until', networkTime.toISOString())
+      .order('generated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !classCode) {
+      return { valid: false, message: 'Invalid or expired class code', server_time: networkTime.toISOString() };
+    }
+
+    const validFrom = new Date(classCode.valid_from);
+    const validUntil = new Date(classCode.valid_until);
+
+    if (networkTime < validFrom) {
+      return { valid: false, message: 'Code is not yet valid', class_code: classCode, server_time: networkTime.toISOString() };
+    }
+
+    if (networkTime > validUntil) {
+      await this.supabase
+        .from('class_codes')
+        .update({ status: 'expired' })
+        .eq('id', classCode.id);
+      return { valid: false, message: 'Code has expired', class_code: classCode, server_time: networkTime.toISOString() };
+    }
+
+    return {
+      valid: true,
+      message: 'Code is valid',
+      class_code: classCode,
+      server_time: networkTime.toISOString(),
+      topic_id: classCode.topic_id || null,
+    };
+  }
+
   async getActiveCodeForClass(classId: string): Promise<ClassCode | null> {
     // Get network time
     const networkTime = await this.getNetworkTime();

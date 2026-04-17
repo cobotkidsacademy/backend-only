@@ -1,10 +1,18 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { HttpAdapterHost } from '@nestjs/core';
 
 @Injectable()
-export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
+export class KeepAliveService
+  implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
+{
   private readonly logger = new Logger(KeepAliveService.name);
   private internalIntervalId: NodeJS.Timeout | null = null;
   private externalIntervalId: NodeJS.Timeout | null = null;
@@ -17,37 +25,12 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    // Small delay to ensure server is fully initialized
-    setTimeout(() => {
-      // Get server instance and port for internal keep-alive
-      try {
-        const httpAdapter = this.httpAdapterHost?.httpAdapter;
-        if (httpAdapter) {
-          this.serverInstance = httpAdapter.getHttpServer();
-          
-          // Extract port from server instance
-          const address = this.serverInstance?.address();
-          if (address && typeof address === 'object') {
-            this.port = address.port;
-          } else {
-            // Fallback: get from environment
-            this.port = parseInt(process.env.PORT || '3001', 10);
-          }
-        } else {
-          // Fallback: get from environment
-          this.port = parseInt(process.env.PORT || '3001', 10);
-        }
-      } catch (error) {
-        this.logger.warn('Could not get server instance for internal keep-alive, using default port');
-        this.port = parseInt(process.env.PORT || '3001', 10);
-      }
-
-      // Start internal keep-alive (pings own health endpoint)
-      this.startInternalKeepAlive();
-    }, 2000); // 2 second delay
-
-    // Start external keep-alive (pings external URL if configured)
     this.startExternalKeepAlive();
+  }
+
+  onApplicationBootstrap() {
+    this.resolveServerPort();
+    this.startInternalKeepAlive();
   }
 
   /**
@@ -55,28 +38,19 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
    * This keeps the server process active and prevents it from going idle
    */
   private startInternalKeepAlive() {
-    const rawInterval =
-      this.configService.get<string>('KEEP_ALIVE_INTERVAL_MS') ?? '';
-    const intervalMs =
-      Number(rawInterval) && Number(rawInterval) > 0
-        ? Number(rawInterval)
-        : 60 * 1000; // default: 1 minute (more frequent for internal)
-
-    // Use localhost for internal keep-alive
-    const baseUrl = this.port
-      ? `http://localhost:${this.port}`
-      : 'http://localhost:3001';
-    const healthUrl = `${baseUrl}/health`;
-
-    this.logger.log(
-      `Starting INTERNAL keep-alive ping to ${healthUrl} every ${
-        intervalMs / 1000
-      } seconds`,
+    const intervalMs = this.parseInterval(
+      this.configService.get<string>('KEEP_ALIVE_INTERVAL_MS'),
+      60 * 1000,
     );
 
-    // Start immediately
-    this.pingInternal(healthUrl);
+    const port = this.port ?? this.parsePortFromEnv();
+    const healthUrl = `http://localhost:${port}/health`;
 
+    this.logger.log(
+      `Starting INTERNAL keep-alive ping to ${healthUrl} every ${intervalMs / 1000} seconds`,
+    );
+
+    this.pingInternal(healthUrl);
     this.internalIntervalId = setInterval(() => {
       this.pingInternal(healthUrl);
     }, intervalMs);
@@ -91,9 +65,8 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
           'X-Keep-Alive': 'internal',
         },
       });
-      this.logger.debug(`✓ Internal keep-alive ping successful`);
+      this.logger.debug('✓ Internal keep-alive ping successful');
     } catch (error: any) {
-      // Don't log as warning if server hasn't started yet
       if (this.serverInstance) {
         this.logger.warn(
           `Internal keep-alive ping failed: ${
@@ -120,17 +93,13 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const rawInterval =
-      this.configService.get<string>('EXTERNAL_KEEP_ALIVE_INTERVAL_MS') ?? '';
-    const intervalMs =
-      Number(rawInterval) && Number(rawInterval) > 0
-        ? Number(rawInterval)
-        : 4 * 60 * 1000; // default: 4 minutes
+    const intervalMs = this.parseInterval(
+      this.configService.get<string>('EXTERNAL_KEEP_ALIVE_INTERVAL_MS'),
+      4 * 60 * 1000,
+    );
 
     this.logger.log(
-      `Starting EXTERNAL keep-alive ping to ${keepAliveUrl} every ${
-        intervalMs / 1000
-      } seconds`,
+      `Starting EXTERNAL keep-alive ping to ${keepAliveUrl} every ${intervalMs / 1000} seconds`,
     );
 
     this.externalIntervalId = setInterval(async () => {
@@ -142,7 +111,7 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
             'X-Keep-Alive': 'external',
           },
         });
-        this.logger.debug(`✓ External keep-alive ping successful`);
+        this.logger.debug('✓ External keep-alive ping successful');
       } catch (error: any) {
         this.logger.warn(
           `External keep-alive ping failed: ${
@@ -151,6 +120,52 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }, intervalMs);
+  }
+
+  private resolveServerPort() {
+    try {
+      const httpAdapter = this.httpAdapterHost?.httpAdapter;
+      if (!httpAdapter) {
+        throw new Error('HTTP adapter is unavailable');
+      }
+
+      this.serverInstance = httpAdapter.getHttpServer();
+      const address = this.serverInstance?.address();
+      this.port = this.parsePortFromAddress(address) ?? this.parsePortFromEnv();
+    } catch (error) {
+      this.logger.warn(
+        'Could not resolve server instance for internal keep-alive; using default port.',
+      );
+      this.port = this.parsePortFromEnv();
+    }
+  }
+
+  private parsePortFromAddress(address: unknown): number | null {
+    if (!address || typeof address !== 'object') {
+      return null;
+    }
+
+    const port = (address as { port?: number }).port;
+    return typeof port === 'number' && port > 0 ? port : null;
+  }
+
+  private parsePortFromEnv(): number {
+    const port = Number(process.env.PORT || '3001');
+    return Number.isInteger(port) && port > 0 ? port : 3001;
+  }
+
+  private parseInterval(
+    rawInterval: string | undefined,
+    defaultMs: number,
+  ): number {
+    if (!rawInterval || !rawInterval.trim()) {
+      return defaultMs;
+    }
+
+    const interval = Number(rawInterval);
+    return Number.isFinite(interval) && interval > 0
+      ? Math.round(interval)
+      : defaultMs;
   }
 
   onModuleDestroy() {
@@ -164,6 +179,3 @@ export class KeepAliveService implements OnModuleInit, OnModuleDestroy {
     }
   }
 }
-
-
-

@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { StudentLoginDto } from './dto/student-login.dto';
+import { StudentClassCodeLoginDto } from './dto/student-class-code-login.dto';
 import { TeamUpDto } from './dto/team-up.dto';
 import { UpdateStudentProfileDto } from './dto/update-student-profile.dto';
 import { CreateParentAccountDto } from './dto/create-parent-account.dto';
@@ -127,6 +128,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async studentLogin(@Body() loginDto: StudentLoginDto) {
     return this.authService.studentLogin(loginDto.username, loginDto.password);
+  }
+
+  @Post('student/class-code-login')
+  @HttpCode(HttpStatus.OK)
+  async studentClassCodeLogin(@Body() loginDto: StudentClassCodeLoginDto) {
+    return this.authService.studentClassCodeLogin(loginDto.username, loginDto.code);
   }
 
   @Post('tutor/login')
